@@ -9,7 +9,7 @@ Windows with no dependencies beyond the C++ standard library.
 
 | Component | Role |
 | --- | --- |
-| `tachyon/` | The server: RESP parser and reply writer, commands, networking |
+| `tachyon/` | The server: RESP parser and reply writer, commands, event loop, networking |
 | `horizon/` | Storage engine library: write-ahead log, snapshots, crash recovery (in progress) |
 
 Horizon knows nothing about networking or RESP; it stores and replays opaque records, so any
@@ -41,8 +41,15 @@ cmake --build build
 ctest --test-dir build -C Debug --output-on-failure
 ```
 
-On Linux, `tools/smoke_test.sh build/tachyon/tachyon` runs the real `redis-cli` against the
-server.
+On Linux, `tools/smoke_test.sh build/tachyon/tachyon` runs the real `redis-cli` and
+`redis-benchmark` (50 concurrent clients) against the server, along with misbehaving clients:
+an HTTP request, a half-sent command, a disconnect mid-command and a client that never reads.
+
+```
+redis-benchmark -p 6380 -c 50 -t ping_mbulk,set,get
+```
+
+`PING_INLINE` is skipped because Tachyon accepts only RESP arrays, not inline commands.
 
 ## Quick start
 
@@ -54,16 +61,26 @@ redis-cli -p 6380 SET greeting hello
 redis-cli -p 6380 GET greeting
 ```
 
-Press Ctrl+C to shut the server down cleanly.
+Use `--port N` to listen on another port. Press Ctrl+C to shut the server down cleanly, even
+with clients connected.
+
+## How it serves many clients
+
+Like Redis, Tachyon runs every command on one thread. All sockets are non-blocking, and an
+event loop built on `poll()` (Linux) or `WSAPoll()` (Windows) waits on all of them at once and
+handles whichever are ready. Each connection has its own read buffer (the parser, holding any
+half-received command) and write buffer (replies the OS hasn't accepted yet), so a slow or idle
+client never holds up the others. A client that stops reading its replies is no longer read
+from once 1 MB of replies is queued for it. Up to 1000 clients are accepted.
 
 ## Status and roadmap
 
-Currently the server handles one client at a time and keeps data in memory only.
+Currently the server keeps data in memory only.
 
 | Phase | Focus | Status |
 | --- | --- | --- |
 | 0–1 | Build, tests, CI, RESP parser, core commands, blocking TCP server | Done |
-| 2 | Non-blocking event loop (`poll` / `WSAPoll`) and many clients | Planned |
+| 2 | Non-blocking event loop (`poll` / `WSAPoll`) and many clients | Done |
 | 3 | Durability with a write-ahead log | Planned |
 | 4 | Hashes, lists and key expiry | Planned |
 | 5 | Pub/sub | Planned |

@@ -1,3 +1,2 @@
-# LF everywhere so scripts run on the Linux CI; Visual Studio wants CRLF in .sln
+# LF everywhere, so scripts run on Linux CI whichever OS they were edited on.
 * text=auto eol=lf
-*.sln text eol=crlf
