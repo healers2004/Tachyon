@@ -1,0 +1,41 @@
+# On every push and pull request: builds and tests Tachyon and Horizon on Linux and Windows.
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  cpp:
+    strategy:
+      fail-fast: false  # a Linux failure shouldn't cancel the Windows run, and vice versa
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # Linux: GCC with AddressSanitizer (memory errors) and UndefinedBehaviorSanitizer.
+      # -fno-sanitize-recover makes any report fail the test instead of just printing.
+      - name: Configure (Linux, sanitizers)
+        if: runner.os == 'Linux'
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
+
+      - name: Configure (Windows, MSVC)
+        if: runner.os == 'Windows'
+        run: cmake -S . -B build
+
+      # --config / -C pick Debug on Windows, where one build folder holds Debug and Release.
+      - name: Build
+        run: cmake --build build --config Debug
+
+      - name: Test
+        run: ctest --test-dir build -C Debug --output-on-failure
+
+      # The real redis-cli against the real tachyon binary (built with sanitizers).
+      - name: Smoke test with redis-cli (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y redis-tools
+          bash tools/smoke_test.sh build/tachyon/tachyon
+

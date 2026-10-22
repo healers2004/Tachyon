@@ -1,0 +1,5 @@
+# Google C++ style, with 4-space indents and 100-column lines.
+BasedOnStyle: Google
+IndentWidth: 4
+ColumnLimit: 100
+AccessModifierOffset: -4  # public:/private: line up with the class keyword
