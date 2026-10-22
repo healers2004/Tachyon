@@ -1,5 +1,6 @@
 # Everything except main(), so tests can link it without starting the server.
 add_library(tachyon_core
+  src/commands/command_log.cpp
   src/commands/commands.cpp
   src/commands/store.cpp
   src/protocol/resp_parser.cpp
@@ -8,6 +9,8 @@ add_library(tachyon_core
   src/server/server.cpp)
 # Lets code write #include "protocol/resp_parser.h".
 target_include_directories(tachyon_core PUBLIC src)
+# The storage engine. PUBLIC: code that includes tachyon headers also sees horizon/log.h.
+target_link_libraries(tachyon_core PUBLIC horizon)
 
 # One socket implementation per OS, behind the same platform/socket.h.
 if(WIN32)
@@ -17,11 +20,12 @@ else()
   target_sources(tachyon_core PRIVATE src/platform/posix/socket.cpp)
 endif()
 
-# The server executable. Doesn't link Horizon yet; storage arrives in Phase 3.
+# The server executable.
 add_executable(tachyon src/main.cpp)
 target_link_libraries(tachyon PRIVATE tachyon_core)
 
 add_executable(tachyon_tests
+  tests/command_log_test.cpp
   tests/commands_test.cpp
   tests/connection_test.cpp
   tests/resp_parser_test.cpp

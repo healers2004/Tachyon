@@ -7,7 +7,7 @@
 
 namespace tachyon {
 
-void handle_input(Connection& connection, Store& store, std::string_view data) {
+void handle_input(Connection& connection, Store& store, CommandLog* log, std::string_view data) {
     connection.parser.feed(data);
 
     // One read can hold several commands (clients may pipeline them), so handle them all.
@@ -23,6 +23,12 @@ void handle_input(Connection& connection, Store& store, std::string_view data) {
             connection.closing = true;
             std::cout << "tachyon: closing client: " << result.error << std::endl;
             return;
+        }
+        // Write-ahead: the command goes into the log before it changes the store, so the
+        // store is never ahead of what's on disk.
+        if (log != nullptr && !log->record(result.args)) {
+            connection.pending_reply += error_reply("ERR command too large to log");
+            continue;
         }
         connection.pending_reply += execute_command(store, result.args);
     }

@@ -10,7 +10,7 @@ Windows with no dependencies beyond the C++ standard library.
 | Component | Role |
 | --- | --- |
 | `tachyon/` | The server: RESP parser and reply writer, commands, event loop, networking |
-| `horizon/` | Storage engine library: write-ahead log, snapshots, crash recovery (in progress) |
+| `horizon/` | Storage engine library: write-ahead log and crash recovery; snapshots planned |
 
 Horizon knows nothing about networking or RESP; it stores and replays opaque records, so any
 program can use it. All OS-specific code lives in `tachyon/src/platform/`, with one POSIX and one
@@ -51,6 +51,10 @@ redis-benchmark -p 6380 -c 50 -t ping_mbulk,set,get
 
 `PING_INLINE` is skipped because Tachyon accepts only RESP arrays, not inline commands.
 
+`tools/crash_test.sh build/tachyon/tachyon 100` checks durability: it writes keys, kills the
+server with `kill -9` at a random moment, restarts it and verifies every acknowledged write, 100
+times in a row.
+
 ## Quick start
 
 Tachyon listens on `127.0.0.1:6380`, so it never clashes with a real Redis on 6379.
@@ -61,8 +65,34 @@ redis-cli -p 6380 SET greeting hello
 redis-cli -p 6380 GET greeting
 ```
 
-Use `--port N` to listen on another port. Press Ctrl+C to shut the server down cleanly, even
-with clients connected.
+Press Ctrl+C to shut the server down cleanly, even with clients connected.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--port N` | `6380` | TCP port to listen on (always on 127.0.0.1) |
+| `--dir PATH` | `.` | Existing directory for the log file, `tachyon.wal` |
+| `--fsync always\|everysec` | `always` | When the log is flushed to disk (see below) |
+| `--no-persist` | off | Keep data in memory only; write nothing to disk |
+
+## Durability
+
+Every write command is appended to a write-ahead log through Horizon before its reply is sent.
+Each record is a 4-byte length, a CRC32 checksum and the command itself, in the same RESP form a
+client sends. On startup Tachyon replays the log into memory before accepting clients.
+
+- `--fsync always` (default): the log is flushed to disk (`fsync` on Linux,
+  `FlushFileBuffers` on Windows) before any reply that acknowledges a write. Writes that arrive
+  together share one flush (group commit). An acknowledged write survives a crash or a power cut.
+- `--fsync everysec`: the log is handed to the OS before each reply but flushed to disk at most
+  once a second. An acknowledged write survives the process crashing, but a power cut can lose
+  about the last second.
+- A crash in the middle of writing a record leaves an incomplete or damaged last record. Replay
+  drops it (it was never acknowledged) and logging continues after the last valid record. Damage
+  anywhere else stops startup with an error instead of silently dropping data.
+
+The crash test kills the process, which proves crash safety, not power-cut safety: after a
+killed process the operating system still writes its cache to disk. The log grows without limit
+until snapshots and compaction arrive in Phase 6.
 
 ## How it serves many clients
 
@@ -75,13 +105,11 @@ from once 1 MB of replies is queued for it. Up to 1000 clients are accepted.
 
 ## Status and roadmap
 
-Currently the server keeps data in memory only.
-
 | Phase | Focus | Status |
 | --- | --- | --- |
 | 0–1 | Build, tests, CI, RESP parser, core commands, blocking TCP server | Done |
 | 2 | Non-blocking event loop (`poll` / `WSAPoll`) and many clients | Done |
-| 3 | Durability with a write-ahead log | Planned |
+| 3 | Durability with a write-ahead log | Done |
 | 4 | Hashes, lists and key expiry | Planned |
 | 5 | Pub/sub | Planned |
 | 6 | Snapshots and log compaction | Planned |

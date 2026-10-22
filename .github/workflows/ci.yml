@@ -39,3 +39,7 @@ jobs:
           sudo apt-get install -y redis-tools
           bash tools/smoke_test.sh build/tachyon/tachyon
 
+      # Kills tachyon with SIGKILL mid-write and checks that no acknowledged write is lost.
+      - name: Crash test (Linux)
+        if: runner.os == 'Linux'
+        run: bash tools/crash_test.sh build/tachyon/tachyon 20

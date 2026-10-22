@@ -6,6 +6,7 @@
 #include <string_view>
 #include <utility>
 
+#include "commands/command_log.h"
 #include "commands/store.h"
 #include "platform/socket.h"
 #include "protocol/resp_parser.h"
@@ -25,6 +26,8 @@ struct Connection {
 // Feeds bytes received from the client to its parser, runs every complete command and
 // appends the replies to pending_reply. After a protocol error, appends the error reply,
 // sets `closing` and ignores the rest of the input. Does no socket I/O.
-void handle_input(Connection& connection, Store& store, std::string_view data);
+// `log` is nullptr with --no-persist. Otherwise every write command is recorded in it before it
+// runs, and the queued replies must not be sent until log->commit() succeeds.
+void handle_input(Connection& connection, Store& store, CommandLog* log, std::string_view data);
 
 }  // namespace tachyon

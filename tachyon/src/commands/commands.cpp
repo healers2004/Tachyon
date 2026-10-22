@@ -81,4 +81,10 @@ std::string execute_command(Store& store, const std::vector<std::string>& args) 
     return error_reply("ERR unknown command '" + args[0] + "'");
 }
 
+bool is_write_command(const std::vector<std::string>& args) {
+    if (args.empty()) return false;
+    const std::string name = to_upper(args[0]);
+    return name == "SET" || name == "DEL";
+}
+
 }  // namespace tachyon

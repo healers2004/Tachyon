@@ -7,3 +7,6 @@ cmake-build-*/
 .vscode/
 Thumbs.db
 .DS_Store
+
+# Tachyon data files
+*.wal

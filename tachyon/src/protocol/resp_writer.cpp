@@ -34,4 +34,12 @@ std::string bulk_reply(std::string_view value) {
 
 std::string null_reply() { return "$-1\r\n"; }
 
+std::string encode_command(const std::vector<std::string>& args) {
+    std::string bytes = "*" + std::to_string(args.size()) + "\r\n";
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        bytes += bulk_reply(args[i]);  // each argument is a bulk string
+    }
+    return bytes;
+}
+
 }  // namespace tachyon

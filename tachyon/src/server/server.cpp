@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 
+#include "commands/command_log.h"
 #include "commands/store.h"
 #include "platform/socket.h"
 #include "protocol/resp_writer.h"
@@ -52,12 +53,12 @@ void accept_new_clients(SocketHandle listener, ConnectionList& connections) {
 }
 
 // Reads what has arrived and runs it. Returns false if the connection should be closed.
-bool read_from(Connection& connection, Store& store) {
+bool read_from(Connection& connection, Store& store, CommandLog* log) {
     char buffer[kReadChunkSize];
     long long n = receive(connection.socket.get(), buffer, sizeof(buffer));
     if (n == kWouldBlock) return true;  // woken up, but nothing to read after all
     if (n <= 0) return false;           // 0: the client closed the connection; -1: error
-    handle_input(connection, store, std::string_view(buffer, static_cast<std::size_t>(n)));
+    handle_input(connection, store, log, std::string_view(buffer, static_cast<std::size_t>(n)));
     return true;
 }
 
@@ -91,18 +92,39 @@ void remove_closed(ConnectionList& connections) {
 
 void request_stop() { g_stop_requested = 1; }
 
-int run_server(const std::string& ip, unsigned short port) {
+int run_server(const ServerOptions& options) {
     std::string error;
-    Socket listener = listen_tcp(ip, port, error);
+
+    // One store for the server's lifetime, so every client sees the same data.
+    Store store;
+    // `log` points at command_log when persistence is on, and stays nullptr with --no-persist.
+    CommandLog command_log;
+    CommandLog* log = nullptr;
+    if (options.persist) {
+        // "/" works as a path separator on Windows too.
+        const std::string path = options.dir + "/" + kLogFileName;
+        if (!command_log.open(path, options.flush, store, error)) {
+            std::cerr << "tachyon: " << error << std::endl;
+            return 1;
+        }
+        log = &command_log;
+        std::cout << "tachyon: replayed " << command_log.replayed_commands() << " command(s) from "
+                  << path << std::endl;
+        if (command_log.dropped_bytes() > 0) {
+            std::cout << "tachyon: dropped a half-written last record ("
+                      << command_log.dropped_bytes() << " bytes) left by a crash" << std::endl;
+        }
+    }
+
+    // Listening only after the replay, so no client sees a half-loaded store.
+    Socket listener = listen_tcp(options.ip, options.port, error);
     if (!listener.valid()) {
         std::cerr << "tachyon: " << error << std::endl;
         return 1;
     }
-    std::cout << "tachyon: listening on " << ip << ":" << port << ", press Ctrl+C to stop"
-              << std::endl;
+    std::cout << "tachyon: listening on " << options.ip << ":" << options.port
+              << ", press Ctrl+C to stop" << std::endl;
 
-    // One store for the server's lifetime, so every client sees the same data.
-    Store store;
     ConnectionList connections;
     std::vector<PollEntry> entries;
     int exit_code = 0;
@@ -126,25 +148,39 @@ int run_server(const std::string& ip, unsigned short port) {
             entries.push_back(entry);
         }
 
+        // On a timeout every entry reports nothing, so the passes below do almost nothing,
+        // but the commit still runs the once-a-second flush.
         int ready = poll_sockets(entries, kPollIntervalMs);
-        if (ready == 0) continue;
         if (ready < 0) {
             std::cerr << "tachyon: waiting for sockets failed" << std::endl;
             exit_code = 1;
             break;
         }
 
+        // 1. Read: run every complete command that arrived. Replies are only queued.
         for (std::size_t i = 0; i < connections.size(); ++i) {
             const PollEntry& entry = entries[i + 1];
             bool keep = true;
             if (entry.want_read && (entry.readable || entry.failed)) {
-                keep = read_from(*connections[i], store);  // a hang-up shows up as a 0 read
+                keep = read_from(*connections[i], store, log);  // a hang-up shows up as a 0 read
             } else if (entry.failed) {
                 keep = false;
             }
-            // Send straight away: most replies fit in the OS buffer, which saves a poll round.
-            if (keep) keep = write_to(*connections[i]);
             if (!keep) connections[i].reset();  // deletes the Connection, closing its socket
+        }
+
+        // 2. Commit: one disk flush covers every write from this pass (group commit), and no
+        // reply is sent before it, so an acknowledged write is always in the log.
+        if (log != nullptr && !log->commit(error)) {
+            std::cerr << "tachyon: " << error << "; stopping without sending unsaved replies"
+                      << std::endl;
+            exit_code = 1;
+            break;
+        }
+
+        // 3. Write: send queued replies. Most fit in the OS buffer straight away.
+        for (std::size_t i = 0; i < connections.size(); ++i) {
+            if (connections[i] && !write_to(*connections[i])) connections[i].reset();
         }
         remove_closed(connections);
 
@@ -152,6 +188,11 @@ int run_server(const std::string& ip, unsigned short port) {
         if (entries[0].readable) accept_new_clients(listener.get(), connections);
     }
 
+    // With kEverySecond the last second of writes may not be on disk yet.
+    if (exit_code == 0 && log != nullptr && !log->sync(error)) {
+        std::cerr << "tachyon: " << error << std::endl;
+        exit_code = 1;
+    }
     // Returning destroys `connections` and `listener`; their destructors close every socket.
     if (exit_code == 0) {
         std::cout << "tachyon: stopped cleanly, closing " << connections.size()

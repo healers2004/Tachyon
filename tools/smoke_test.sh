@@ -2,15 +2,17 @@
 # End-to-end check: starts tachyon, talks to it with the real redis-cli and redis-benchmark,
 # sends an HTTP request that must be rejected, misbehaves as several kinds of client, then
 # stops it with SIGINT (Ctrl+C) while clients are still connected and expects a clean exit.
+# Then checks that data survives a restart, and that --no-persist keeps nothing.
 # Usage: tools/smoke_test.sh path/to/tachyon
 set -euo pipefail
 
 tachyon="$1"
 port=6380
 pid=""
+data_dir="$(mktemp -d)"
 
-# If anything below fails, don't leave tachyon running.
-trap '[ -n "$pid" ] && kill "$pid" 2>/dev/null || true' EXIT
+# If anything below fails, don't leave tachyon running or temp files behind.
+trap '[ -n "$pid" ] && kill "$pid" 2>/dev/null; rm -rf "$data_dir"' EXIT
 
 # start_server [tachyon arguments...]: starts tachyon on $port and waits up to 5 s for it.
 start_server() {
@@ -65,8 +67,18 @@ if "$tachyon" --port 99999 2>/dev/null; then
     exit 1
 fi
 echo "ok: invalid --port rejected"
+if "$tachyon" --fsync sometimes 2>/dev/null; then
+    echo "FAIL: --fsync sometimes was accepted"
+    exit 1
+fi
+echo "ok: invalid --fsync rejected"
+if "$tachyon" --dir "$data_dir/missing" 2>/dev/null; then
+    echo "FAIL: a missing --dir was accepted"
+    exit 1
+fi
+echo "ok: missing --dir rejected"
 
-start_server
+start_server --dir "$data_dir"
 
 check PONG PING
 check hello ECHO hello
@@ -129,9 +141,28 @@ exec 4>&- 6>&-
 kill "$writer" 2>/dev/null || true
 echo "ok: clean shutdown on SIGINT with clients connected"
 
-# --port moves the server off the default port.
-port=6381
-start_server --port "$port"
-check PONG PING
+# Everything written before the shutdown is replayed from the log on the next start.
+start_server --dir "$data_dir"
+check 1 EXISTS key:__rand_int__ # written by redis-benchmark's SET test before the restart
+check OK SET survivor "still here"
 stop_server
-echo "ok: --port $port"
+start_server --dir "$data_dir"
+check "still here" GET survivor
+stop_server
+echo "ok: data survives a restart"
+
+# --no-persist writes no log and forgets everything on exit. --port moves the server.
+port=6381
+memory_dir="$(mktemp -d)"
+start_server --port "$port" --no-persist --dir "$memory_dir"
+check OK SET gone soon
+stop_server
+start_server --port "$port" --no-persist --dir "$memory_dir"
+check "" GET gone
+stop_server
+if [ -n "$(ls -A "$memory_dir")" ]; then
+    echo "FAIL: --no-persist wrote files"
+    exit 1
+fi
+rmdir "$memory_dir"
+echo "ok: --no-persist and --port $port"

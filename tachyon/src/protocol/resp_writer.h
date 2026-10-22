@@ -3,6 +3,7 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace tachyon {
 
@@ -20,5 +21,9 @@ std::string bulk_reply(std::string_view value);
 
 // "$-1\r\n": nil, e.g. GET on a missing key.
 std::string null_reply();
+
+// "*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n": a command in the form clients send it. The write-ahead
+// log stores commands this way, so replay reuses the normal RESP parser.
+std::string encode_command(const std::vector<std::string>& args);
 
 }  // namespace tachyon

@@ -22,3 +22,9 @@ TEST(RespWriter, SingleLineRepliesStripCrlf) {
     EXPECT_EQ(tachyon::error_reply("ERR bad 'x\r\n+OK'"), "-ERR bad 'x  +OK'\r\n");
     EXPECT_EQ(tachyon::simple_string_reply("a\nb"), "+a b\r\n");
 }
+
+// The log stores commands in the same form clients send them.
+TEST(RespWriter, EncodeCommandMatchesClientFormat) {
+    EXPECT_EQ(tachyon::encode_command({"SET", "foo", "a\r\nb"}),
+              "*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$4\r\na\r\nb\r\n");
+}
