@@ -87,7 +87,7 @@ check bar GET foo
 check 1 EXISTS foo
 check 1 DEL foo
 check "" GET foo
-check "ERR unknown command 'FLY'" FLY
+check "ERR unknown command 'FLY', with args beginning with: " FLY
 
 # A web page posting to localhost must get a protocol error and be disconnected.
 # bash's /dev/tcp opens a TCP connection as file descriptor 3.
@@ -145,11 +145,22 @@ echo "ok: clean shutdown on SIGINT with clients connected"
 start_server --dir "$data_dir"
 check 1 EXISTS key:__rand_int__ # written by redis-benchmark's SET test before the restart
 check OK SET survivor "still here"
+check 2 RPUSH survivor-list a b
+check 1 HSET survivor-hash f v
+check OK SET survivor-ttl v EX 1000
 stop_server
 start_server --dir "$data_dir"
 check "still here" GET survivor
+check "$(printf 'a\nb')" LRANGE survivor-list 0 -1
+check v HGET survivor-hash f
+# The log holds the absolute deadline, so the TTL kept counting down; it didn't restart.
+ttl="$(redis-cli -p "$port" TTL survivor-ttl)"
+if [ "$ttl" -gt 1000 ] || [ "$ttl" -lt 990 ]; then
+    echo "FAIL: TTL after restart is $ttl, expected 990-1000"
+    exit 1
+fi
 stop_server
-echo "ok: data survives a restart"
+echo "ok: every type and its TTL survive a restart"
 
 # --no-persist writes no log and forgets everything on exit. --port moves the server.
 port=6381
@@ -159,6 +170,19 @@ check OK SET gone soon
 stop_server
 start_server --port "$port" --no-persist --dir "$memory_dir"
 check "" GET gone
+
+# Expiry in real time. Lazy: an expired key reads as missing. Active: the once-a-second sweep
+# removes a key nobody reads, which DBSIZE (it counts expired keys too) shows.
+check OK SET short v PX 300
+check v GET short
+sleep 0.5
+check "" GET short
+check OK SET unread v PX 200
+check OK SET kept v
+check 2 DBSIZE
+sleep 1.5
+check 1 DBSIZE
+echo "ok: keys expire on access and in the background sweep"
 stop_server
 if [ -n "$(ls -A "$memory_dir")" ]; then
     echo "FAIL: --no-persist wrote files"

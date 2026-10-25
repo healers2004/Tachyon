@@ -18,14 +18,22 @@ Win32 implementation behind a single header.
 
 ## Supported commands
 
-| Command | Notes |
+Every reply matches Redis 7 for the same input, including error messages; a script checks this
+against a real Redis (see below).
+
+| Group | Commands |
 | --- | --- |
-| `PING [message]` | |
-| `ECHO message` | |
-| `GET key` | |
-| `SET key value` | Options (`EX`, `PX`, `NX`, `XX`) are planned |
-| `DEL key [key ...]` | Returns the number of keys removed |
-| `EXISTS key [key ...]` | Returns the number of keys that exist |
+| Connection | `PING [message]`, `ECHO message` |
+| Strings | `GET`, `SET key value [NX \| XX] [EX s \| PX ms \| EXAT t \| PXAT t \| KEEPTTL]`, `DEL key [key ...]`, `EXISTS key [key ...]` |
+| Hashes | `HSET key field value [field value ...]`, `HGET`, `HGETALL`, `HDEL key field [field ...]`, `HLEN` |
+| Lists | `LPUSH`, `RPUSH key element [element ...]`, `LPOP`, `RPOP key [count]`, `LRANGE`, `LTRIM key start stop`, `LLEN` |
+| Expiry | `EXPIRE key seconds`, `PEXPIREAT key unix-ms`, `TTL`, `PERSIST` |
+| Keyspace | `TYPE`, `DBSIZE`, `FLUSHALL [SYNC \| ASYNC]` |
+
+Using a key as the wrong type gives Redis's `WRONGTYPE` error. Emptied hashes and lists are
+deleted, as in Redis. Expired keys are removed when accessed and by a sweep about once a second.
+Not yet supported: `SET ... GET`, `EXPIRE`'s `NX`/`XX`/`GT`/`LT`, and insertion order in
+`HGETALL` (Redis keeps it for small hashes).
 
 Only RESP arrays are accepted as commands, so stray input such as an HTTP request is rejected
 instead of being run.
@@ -50,6 +58,9 @@ redis-benchmark -p 6380 -c 50 -t ping_mbulk,set,get
 ```
 
 `PING_INLINE` is skipped because Tachyon accepts only RESP arrays, not inline commands.
+
+`tools/compare_with_redis.sh build/tachyon/tachyon` sends 150 commands, edge cases and errors
+included, to both a real `redis-server` and Tachyon, and fails on any difference in the replies.
 
 `tools/crash_test.sh build/tachyon/tachyon 100` checks durability: it writes keys, kills the
 server with `kill -9` at a random moment, restarts it and verifies every acknowledged write, 100
@@ -79,6 +90,8 @@ Press Ctrl+C to shut the server down cleanly, even with clients connected.
 Every write command is appended to a write-ahead log through Horizon before its reply is sent.
 Each record is a 4-byte length, a CRC32 checksum and the command itself, in the same RESP form a
 client sends. On startup Tachyon replays the log into memory before accepting clients.
+Relative expiry times are logged as absolute ones (`EXPIRE k 10` becomes `PEXPIREAT k <time>`,
+as Redis does), so a key's deadline doesn't restart when the log is replayed.
 
 - `--fsync always` (default): the log is flushed to disk (`fsync` on Linux,
   `FlushFileBuffers` on Windows) before any reply that acknowledges a write. Writes that arrive
@@ -110,7 +123,7 @@ from once 1 MB of replies is queued for it. Up to 1000 clients are accepted.
 | 0–1 | Build, tests, CI, RESP parser, core commands, blocking TCP server | Done |
 | 2 | Non-blocking event loop (`poll` / `WSAPoll`) and many clients | Done |
 | 3 | Durability with a write-ahead log | Done |
-| 4 | Hashes, lists and key expiry | Planned |
+| 4 | Hashes, lists and key expiry | Done |
 | 5 | Pub/sub | Planned |
 | 6 | Snapshots and log compaction | Planned |
 | 7 | Fuzzing, benchmarks against Redis, v1.0 release | Planned |

@@ -2,7 +2,11 @@
 add_library(tachyon_core
   src/commands/command_log.cpp
   src/commands/commands.cpp
+  src/commands/hash_commands.cpp
+  src/commands/key_commands.cpp
+  src/commands/list_commands.cpp
   src/commands/store.cpp
+  src/commands/string_commands.cpp
   src/protocol/resp_parser.cpp
   src/protocol/resp_writer.cpp
   src/server/connection.cpp
@@ -28,6 +32,9 @@ add_executable(tachyon_tests
   tests/command_log_test.cpp
   tests/commands_test.cpp
   tests/connection_test.cpp
+  tests/expiry_test.cpp
+  tests/hash_commands_test.cpp
+  tests/list_commands_test.cpp
   tests/resp_parser_test.cpp
   tests/resp_writer_test.cpp
   tests/socket_test.cpp

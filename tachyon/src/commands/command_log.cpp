@@ -47,7 +47,8 @@ bool CommandLog::replay(const std::string& path, Store& store, std::uint64_t& va
                     std::to_string(reader.valid_bytes());
             return false;
         }
-        execute_command(store, command.args);  // the reply is thrown away during replay
+        // Expiry times in the log are absolute, so keys whose time has passed are dropped.
+        execute_command(store, command.args, current_time_ms());  // the reply is thrown away
         ++replayed_commands_;
     }
     valid_bytes = reader.valid_bytes();

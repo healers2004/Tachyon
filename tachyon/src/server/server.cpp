@@ -29,6 +29,8 @@ const std::size_t kReadChunkSize = 16 * 1024;
 const std::size_t kMaxPendingReplyBytes = 1024 * 1024;
 // Like Redis's maxclients: refuse more, rather than running out of file descriptors.
 const std::size_t kMaxClients = 1000;
+// How often the event loop deletes expired keys that nobody has read (active expiry).
+const std::int64_t kExpirySweepIntervalMs = 1000;
 
 // unique_ptr: each Connection lives on the heap and is deleted (closing its socket) when its
 // unique_ptr is reset or destroyed. Its address never changes as the vector grows, so later
@@ -127,6 +129,7 @@ int run_server(const ServerOptions& options) {
 
     ConnectionList connections;
     std::vector<PollEntry> entries;
+    std::int64_t last_sweep_ms = current_time_ms();
     int exit_code = 0;
 
     // The event loop: one thread waits on every socket at once and handles whichever are
@@ -183,6 +186,14 @@ int run_server(const ServerOptions& options) {
             if (connections[i] && !write_to(*connections[i])) connections[i].reset();
         }
         remove_closed(connections);
+
+        // poll wakes at least every 100 ms, so this runs about once a second. Deleting an
+        // expired key needs no log record: replay sees the same absolute deadline and drops it.
+        const std::int64_t now_ms = current_time_ms();
+        if (now_ms - last_sweep_ms >= kExpirySweepIntervalMs) {
+            store.remove_expired(now_ms);
+            last_sweep_ms = now_ms;
+        }
 
         // After the loop above, so new clients don't shift the entry-to-connection mapping.
         if (entries[0].readable) accept_new_clients(listener.get(), connections);

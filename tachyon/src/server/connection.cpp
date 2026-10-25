@@ -24,13 +24,18 @@ void handle_input(Connection& connection, Store& store, CommandLog* log, std::st
             std::cout << "tachyon: closing client: " << result.error << std::endl;
             return;
         }
+        // EXPIRE k 10 runs (and is logged) as PEXPIREAT k <deadline>, so a replay later sets
+        // the same deadline instead of a fresh 10 seconds.
+        const std::int64_t now_ms = current_time_ms();
+        const std::vector<std::string> args = with_absolute_times(result.args, now_ms);
+
         // Write-ahead: the command goes into the log before it changes the store, so the
         // store is never ahead of what's on disk.
-        if (log != nullptr && !log->record(result.args)) {
+        if (log != nullptr && !log->record(args)) {
             connection.pending_reply += error_reply("ERR command too large to log");
             continue;
         }
-        connection.pending_reply += execute_command(store, result.args);
+        connection.pending_reply += execute_command(store, args, now_ms);
     }
 }
 

@@ -1,21 +1,12 @@
-#include "commands/commands.h"
-
 #include <gtest/gtest.h>
 
 #include <string>
 #include <vector>
 
-using tachyon::execute_command;
+#include "command_test_util.h"
+
 using tachyon::Store;
-
-namespace {
-
-// Runs one command against `store`; the braces build the argument vector.
-std::string run(Store& store, const std::vector<std::string>& args) {
-    return execute_command(store, args);
-}
-
-}  // namespace
+using test::run;
 
 TEST(Commands, Ping) {
     Store store;
@@ -42,12 +33,6 @@ TEST(Commands, GetMissingKeyIsNil) {
     EXPECT_EQ(run(store, {"GET", "nope"}), "$-1\r\n");
 }
 
-TEST(Commands, SetRejectsOptionsForNow) {
-    Store store;
-    EXPECT_EQ(run(store, {"SET", "k", "v", "EX", "10"}), "-ERR syntax error\r\n");
-    EXPECT_EQ(run(store, {"SET", "k"}), "-ERR wrong number of arguments for 'set' command\r\n");
-}
-
 TEST(Commands, DelCountsRemovedKeys) {
     Store store;
     run(store, {"SET", "a", "1"});
@@ -70,16 +55,54 @@ TEST(Commands, NamesAreCaseInsensitive) {
 
 TEST(Commands, UnknownCommand) {
     Store store;
-    EXPECT_EQ(run(store, {"FLY", "away"}), "-ERR unknown command 'FLY'\r\n");
+    // Redis 7's exact wording, trailing space included.
+    EXPECT_EQ(run(store, {"FLY", "away", "now"}),
+              "-ERR unknown command 'FLY', with args beginning with: 'away' 'now' \r\n");
+    EXPECT_EQ(run(store, {"FLY"}), "-ERR unknown command 'FLY', with args beginning with: \r\n");
 }
 
 // The command name is echoed in the error; a \r\n in it must not start a second reply.
 TEST(Commands, UnknownCommandCannotInjectReply) {
     Store store;
-    EXPECT_EQ(run(store, {"X\r\n+OK"}), "-ERR unknown command 'X  +OK'\r\n");
+    EXPECT_EQ(run(store, {"X\r\n+OK"}),
+              "-ERR unknown command 'X  +OK', with args beginning with: \r\n");
 }
 
 TEST(Commands, EmptyArgsIsAnError) {
     Store store;
     EXPECT_EQ(run(store, {}), "-ERR empty command\r\n");
+}
+
+TEST(Commands, TypeDbsizeFlushall) {
+    Store store;
+    run(store, {"SET", "s", "v"});
+    run(store, {"HSET", "h", "f", "v"});
+    run(store, {"RPUSH", "l", "a"});
+    EXPECT_EQ(run(store, {"TYPE", "s"}), "+string\r\n");
+    EXPECT_EQ(run(store, {"TYPE", "h"}), "+hash\r\n");
+    EXPECT_EQ(run(store, {"TYPE", "l"}), "+list\r\n");
+    EXPECT_EQ(run(store, {"TYPE", "missing"}), "+none\r\n");
+    EXPECT_EQ(run(store, {"DBSIZE"}), ":3\r\n");
+    EXPECT_EQ(run(store, {"FLUSHALL", "FOO"}), "-ERR syntax error\r\n");
+    EXPECT_EQ(run(store, {"FLUSHALL", "async"}), "+OK\r\n");
+    EXPECT_EQ(run(store, {"DBSIZE"}), ":0\r\n");
+}
+
+// Arity comes from the command table: exact for GET, "at least" for DEL.
+TEST(Commands, ArityFromTable) {
+    Store store;
+    EXPECT_EQ(run(store, {"GET", "a", "b"}),
+              "-ERR wrong number of arguments for 'get' command\r\n");
+    EXPECT_EQ(run(store, {"del"}), "-ERR wrong number of arguments for 'del' command\r\n");
+    EXPECT_EQ(run(store, {"DBSIZE", "x"}),
+              "-ERR wrong number of arguments for 'dbsize' command\r\n");
+}
+
+TEST(Commands, OnlyWritesAreLogged) {
+    EXPECT_TRUE(tachyon::is_write_command({"set", "k", "v"}));
+    EXPECT_TRUE(tachyon::is_write_command({"LPOP", "l"}));
+    EXPECT_TRUE(tachyon::is_write_command({"EXPIRE", "k", "1"}));
+    EXPECT_FALSE(tachyon::is_write_command({"GET", "k"}));
+    EXPECT_FALSE(tachyon::is_write_command({"TTL", "k"}));
+    EXPECT_FALSE(tachyon::is_write_command({"NOPE"}));
 }

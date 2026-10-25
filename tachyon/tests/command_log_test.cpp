@@ -27,11 +27,17 @@ void start_fresh() { std::remove(kPath.c_str()); }
 // Runs commands the way the server does: record, run, then commit before "replying".
 void run_logged(CommandLog& log, Store& store, const std::vector<std::vector<std::string>>& cmds) {
     for (std::size_t i = 0; i < cmds.size(); ++i) {
-        ASSERT_TRUE(log.record(cmds[i]));
-        tachyon::execute_command(store, cmds[i]);
+        const std::int64_t now = tachyon::current_time_ms();
+        const std::vector<std::string> args = tachyon::with_absolute_times(cmds[i], now);
+        ASSERT_TRUE(log.record(args));
+        tachyon::execute_command(store, args, now);
     }
     std::string error;
     ASSERT_TRUE(log.commit(error)) << error;
+}
+
+bool has(Store& store, const std::string& key) {
+    return store.find(key, tachyon::current_time_ms()) != nullptr;
 }
 
 std::uint64_t file_size() {
@@ -56,8 +62,9 @@ TEST(CommandLog, RestartReplaysCommittedWrites) {
     CommandLog log;
     ASSERT_TRUE(log.open(kPath, FlushPolicy::kEveryWrite, store, error)) << error;
     EXPECT_EQ(log.replayed_commands(), 3u);
-    EXPECT_FALSE(store.exists("a"));
-    EXPECT_EQ(store.get("b"), std::optional<std::string>("2"));
+    EXPECT_FALSE(has(store, "a"));
+    EXPECT_EQ(tachyon::execute_command(store, {"GET", "b"}, tachyon::current_time_ms()),
+              "$1\r\n2\r\n");
 }
 
 TEST(CommandLog, ReadsAreNotLogged) {
@@ -89,15 +96,15 @@ TEST(CommandLog, TornTailIsDroppedAndLoggingContinues) {
         CommandLog log;
         ASSERT_TRUE(log.open(kPath, FlushPolicy::kEveryWrite, store, error)) << error;
         EXPECT_EQ(log.dropped_bytes(), 3u);
-        EXPECT_TRUE(store.exists("kept"));
+        EXPECT_TRUE(has(store, "kept"));
         run_logged(log, store, {{"SET", "after", "2"}});
     }
     Store store;
     CommandLog log;
     ASSERT_TRUE(log.open(kPath, FlushPolicy::kEveryWrite, store, error)) << error;
     EXPECT_EQ(log.dropped_bytes(), 0u);
-    EXPECT_TRUE(store.exists("kept"));
-    EXPECT_TRUE(store.exists("after"));
+    EXPECT_TRUE(has(store, "kept"));
+    EXPECT_TRUE(has(store, "after"));
 }
 
 TEST(CommandLog, DamagedLogRefusesToStart) {
@@ -135,4 +142,35 @@ TEST(CommandLog, HandleInputRecordsWritesForGroupCommit) {
     EXPECT_EQ(file_size(), 0u);  // queued, not yet written
     ASSERT_TRUE(log.commit(error)) << error;
     EXPECT_GT(file_size(), 0u);
+}
+
+// Replay rebuilds every type, and an expiry keeps its original deadline instead of restarting.
+TEST(CommandLog, ReplayRebuildsEveryTypeAndExpiry) {
+    start_fresh();
+    std::string error;
+    std::int64_t deadline = 0;
+    {
+        Store store;
+        CommandLog log;
+        ASSERT_TRUE(log.open(kPath, FlushPolicy::kEveryWrite, store, error)) << error;
+        run_logged(log, store,
+                   {{"HSET", "h", "f", "v", "g", "w"},
+                    {"HDEL", "h", "g"},
+                    {"RPUSH", "l", "a", "b", "c"},
+                    {"LPOP", "l"},
+                    {"SET", "s", "v", "EX", "1000"},
+                    {"SET", "gone", "x"},
+                    {"EXPIRE", "gone", "-1"}});
+        deadline = store.expiry("s");
+    }
+    Store store;
+    CommandLog log;
+    ASSERT_TRUE(log.open(kPath, FlushPolicy::kEveryWrite, store, error)) << error;
+    const std::int64_t now = tachyon::current_time_ms();
+    EXPECT_EQ(tachyon::execute_command(store, {"HGETALL", "h"}, now),
+              "*2\r\n$1\r\nf\r\n$1\r\nv\r\n");
+    EXPECT_EQ(tachyon::execute_command(store, {"LRANGE", "l", "0", "-1"}, now),
+              "*2\r\n$1\r\nb\r\n$1\r\nc\r\n");
+    EXPECT_EQ(store.expiry("s"), deadline);  // the same millisecond, not "1000 s from replay"
+    EXPECT_EQ(store.find("gone", now), nullptr);
 }
