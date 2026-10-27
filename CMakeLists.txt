@@ -23,3 +23,9 @@ include(GoogleTest)
 
 add_subdirectory(horizon)
 add_subdirectory(tachyon)
+
+# libFuzzer targets for the RESP parser and the log reader. Clang only; see tools/fuzz.sh.
+option(TACHYON_FUZZ "Build the libFuzzer targets in tools/fuzz" OFF)
+if(TACHYON_FUZZ)
+  add_subdirectory(tools/fuzz)
+endif()

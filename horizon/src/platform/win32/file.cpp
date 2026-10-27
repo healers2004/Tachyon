@@ -54,6 +54,16 @@ bool write_all(FileHandle file, std::span<const char> data) {
 
 bool sync_file(FileHandle file) { return FlushFileBuffers(to_native(file)) != 0; }
 
+// MOVEFILE_REPLACE_EXISTING: overwrite `to` in one step. MOVEFILE_WRITE_THROUGH: don't return
+// until the rename is on disk, which is what the directory fsync does on Linux.
+// shortcut: the "A" version, like CreateFileA above; MoveFileExW would accept any path.
+bool replace_file(const std::string& from, const std::string& to) {
+    return MoveFileExA(from.c_str(), to.c_str(),
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+}
+
+bool sync_directory(const std::string&) { return true; }
+
 std::string last_file_error() { return "Windows error " + std::to_string(GetLastError()); }
 
 }  // namespace horizon

@@ -22,20 +22,32 @@ LineStatus read_length_line(std::string_view buf, std::size_t& pos, char type, l
     if (buf[pos] != type) {
         return LineStatus::kError;
     }
+    // The same limit must apply whether or not the "\r\n" has arrived yet, or the same bytes
+    // would be accepted in one read and rejected when split across reads (found by fuzzing).
     std::size_t end = buf.find("\r\n", pos);
     if (end == std::string_view::npos) {
-        // Incomplete, unless it's already too long to ever become a valid line.
-        return buf.size() - pos > kMaxLengthLine ? LineStatus::kError : LineStatus::kNeedMore;
+        // Incomplete: too long already, unless the only extra byte is a '\r' whose '\n' is
+        // still on its way.
+        std::size_t available = buf.size() - pos;
+        bool waiting_for_newline = available == kMaxLengthLine + 1 && buf.back() == '\r';
+        return available > kMaxLengthLine && !waiting_for_newline ? LineStatus::kError
+                                                                  : LineStatus::kNeedMore;
     }
+    if (end - pos > kMaxLengthLine) return LineStatus::kError;
 
     // The digits between the type character and "\r\n". substr on a string_view copies nothing.
     std::string_view digits = buf.substr(pos + 1, end - pos - 1);
+    // Like Redis: plain digits only, no sign, and no leading zero (other than "0" itself).
+    if (digits.empty() || digits[0] < '0' || digits[0] > '9' ||
+        (digits.size() > 1 && digits[0] == '0')) {
+        return LineStatus::kError;
+    }
     const char* first = digits.data();
     const char* last = first + digits.size();
     // std::from_chars parses a number without exceptions. ec is set on non-digits or overflow;
     // ptr != last means junk after the number.
     std::from_chars_result parsed = std::from_chars(first, last, value);
-    if (digits.empty() || parsed.ec != std::errc() || parsed.ptr != last) {
+    if (parsed.ec != std::errc() || parsed.ptr != last) {
         return LineStatus::kError;
     }
     pos = end + 2;

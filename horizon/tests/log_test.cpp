@@ -2,9 +2,11 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 using horizon::FlushPolicy;
@@ -189,4 +191,26 @@ TEST(Log, OversizedRecordIsRejected) {
     ASSERT_TRUE(log.open(kPath, 0, FlushPolicy::kEveryWrite, error)) << error;
     std::string huge(horizon::kMaxRecordBytes + 1, 'x');
     EXPECT_FALSE(log.append(huge));
+}
+
+// --fsync everysec: a commit hands the bytes to the OS but leaves them unflushed until a second
+// has passed since the last flush; then the next commit flushes them.
+TEST(Log, EverySecondPolicyFlushesOnceASecond) {
+    start_fresh();
+    Log log;
+    std::string error;
+    ASSERT_TRUE(log.open(kPath, 0, FlushPolicy::kEverySecond, error)) << error;
+    log.append(std::string("one"));
+    ASSERT_TRUE(log.commit(error)) << error;
+    EXPECT_TRUE(log.unsynced());  // written, not yet flushed
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    ASSERT_TRUE(log.commit(error)) << error;  // nothing new, but a second has passed
+    EXPECT_FALSE(log.unsynced());
+
+    Log always;
+    ASSERT_TRUE(always.open(kPath, 0, FlushPolicy::kEveryWrite, error)) << error;
+    always.append(std::string("two"));
+    ASSERT_TRUE(always.commit(error)) << error;
+    EXPECT_FALSE(always.unsynced());  // kEveryWrite flushes on every commit
 }

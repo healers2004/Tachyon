@@ -8,10 +8,9 @@
 #include <unordered_set>
 #include <utility>
 
-#include "commands/command_log.h"
-#include "commands/store.h"
 #include "platform/socket.h"
 #include "protocol/resp_parser.h"
+#include "server/context.h"
 
 namespace tachyon {
 
@@ -49,10 +48,9 @@ bool over_output_limit(const Connection& connection);
 // Feeds bytes received from the client to its parser, runs every complete command and
 // appends the replies to pending_reply. After a protocol error or QUIT, appends the reply,
 // sets `closing` and ignores the rest of the input. Does no socket I/O.
-// `log` is nullptr with --no-persist. Otherwise every write command is recorded in it before it
-// runs, and the queued replies must not be sent until log->commit() succeeds.
-// `pubsub` must outlive every connection that subscribes through it.
-void handle_input(Connection& connection, Store& store, CommandLog* log, PubSub& pubsub,
-                  std::string_view data);
+// With persistence on, every write command is recorded in context.log before it runs, and the
+// queued replies must not be sent until context.log->commit() succeeds. `context` must outlive
+// every connection that uses it (its pub/sub registry points at them).
+void handle_input(Connection& connection, ServerContext& context, std::string_view data);
 
 }  // namespace tachyon

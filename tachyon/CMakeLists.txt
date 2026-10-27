@@ -11,8 +11,10 @@ add_library(tachyon_core
   src/protocol/resp_writer.cpp
   src/server/client_commands.cpp
   src/server/connection.cpp
+  src/server/logging.cpp
   src/server/pubsub.cpp
-  src/server/server.cpp)
+  src/server/server.cpp
+  src/server/server_commands.cpp)
 # Lets code write #include "protocol/resp_parser.h".
 target_include_directories(tachyon_core PUBLIC src)
 # The storage engine. PUBLIC: code that includes tachyon headers also sees horizon/log.h.
@@ -40,6 +42,8 @@ add_executable(tachyon_tests
   tests/pubsub_test.cpp
   tests/resp_parser_test.cpp
   tests/resp_writer_test.cpp
+  tests/server_commands_test.cpp
+  tests/snapshot_test.cpp
   tests/socket_test.cpp
   tests/store_test.cpp)
 target_link_libraries(tachyon_tests PRIVATE tachyon_core GTest::gtest_main)

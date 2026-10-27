@@ -4,6 +4,7 @@
 #include <charconv>
 #include <cstddef>
 #include <limits>
+#include <string_view>
 #include <system_error>
 
 #include "commands/command_util.h"
@@ -16,9 +17,11 @@ namespace {
 // One row per command, like Redis's command table. arity counts the name too: 2 means exactly
 // "GET key"; a negative arity -N means "at least N", e.g. DEL -2 is "DEL key [key ...]".
 struct CommandSpec {
-    const char* name;  // lowercase, as Redis prints it in error messages
+    std::string_view name;  // lowercase, as Redis prints it in error messages
     int arity;
     bool writes;  // can change the store, so it goes to the write-ahead log
+    // nullptr for commands about the server (SAVE, INFO), which the server layer runs; they're
+    // listed so arity checks and subscribed mode know them.
     Handler handler;
 };
 
@@ -36,15 +39,15 @@ const CommandSpec kCommands[] = {
     {"lpush", -3, true, cmd_lpush},       {"rpush", -3, true, cmd_rpush},
     {"lpop", -2, true, cmd_lpop},         {"rpop", -2, true, cmd_rpop},
     {"lrange", 4, false, cmd_lrange},     {"ltrim", 4, true, cmd_ltrim},
-    {"llen", 2, false, cmd_llen},
+    {"llen", 2, false, cmd_llen},         {"save", 1, false, nullptr},
+    {"info", -1, false, nullptr},
 };
 
 // nullptr if there's no such command. Names are case-insensitive, like Redis.
 const CommandSpec* find_command(const std::string& name) {
-    const std::string lower = to_lower(name);
     // Range-based for: visits each element of the array in order.
     for (const CommandSpec& spec : kCommands) {
-        if (lower == spec.name) return &spec;
+        if (is_command(name, spec.name)) return &spec;
     }
     return nullptr;
 }
@@ -67,7 +70,20 @@ std::string unknown_command(const std::vector<std::string>& args) {
 
 }  // namespace
 
-// ---- Shared helpers (declared in command_util.h) ----
+// ---- Shared helpers ----
+
+// Case-insensitive match without building a lowercase copy. Profiling showed the old way (a
+// lowercase copy of the name, then strcmp against every row) was the biggest cost in tachyon's
+// own code; now the length check rejects most rows at once and nothing is allocated.
+bool is_command(const std::string& given, std::string_view name) {
+    if (given.size() != name.size()) return false;
+    for (std::size_t i = 0; i < name.size(); ++i) {
+        char c = given[i];
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        if (c != name[i]) return false;
+    }
+    return true;
+}
 
 std::string wrong_type_reply() {
     return error_reply("WRONGTYPE Operation against a key holding the wrong kind of value");
@@ -152,22 +168,44 @@ std::string cmd_echo(Store&, const Args& args, std::int64_t) { return bulk_reply
 
 // ---- Dispatch ----
 
-std::string validate_command(const std::vector<std::string>& args) {
-    // The parser never produces an empty command, but never index into an empty vector.
-    if (args.empty()) return error_reply("ERR empty command");
+namespace {
 
+// The command's table row, or nullptr with the error reply in `error` (unknown command, or
+// wrong number of arguments). One lookup serves both checking and running.
+const CommandSpec* checked_command(const std::vector<std::string>& args, std::string& error) {
+    // The parser never produces an empty command, but never index into an empty vector.
+    if (args.empty()) {
+        error = error_reply("ERR empty command");
+        return nullptr;
+    }
     const CommandSpec* spec = find_command(args[0]);
-    // error_reply replaces any \r\n in the user's text, so this can't inject a reply.
-    if (spec == nullptr) return unknown_command(args);
-    if (!arity_ok(*spec, args.size())) return wrong_arg_count(spec->name);
-    return "";
+    if (spec == nullptr) {
+        // error_reply replaces any \r\n in the user's text, so this can't inject a reply.
+        error = unknown_command(args);
+    } else if (!arity_ok(*spec, args.size())) {
+        error = wrong_arg_count(std::string(spec->name));
+        spec = nullptr;
+    }
+    return spec;
+}
+
+}  // namespace
+
+std::string validate_command(const std::vector<std::string>& args) {
+    std::string error;
+    checked_command(args, error);
+    return error;
 }
 
 std::string execute_command(Store& store, const std::vector<std::string>& args,
                             std::int64_t now_ms) {
-    std::string error = validate_command(args);
-    if (!error.empty()) return error;
-    return find_command(args[0])->handler(store, args, now_ms);
+    std::string error;
+    const CommandSpec* spec = checked_command(args, error);
+    if (spec == nullptr) return error;
+    if (spec->handler == nullptr) {
+        return error_reply("ERR '" + args[0] + "' needs a running server");
+    }
+    return spec->handler(store, args, now_ms);
 }
 
 bool is_write_command(const std::vector<std::string>& args) {
@@ -176,18 +214,17 @@ bool is_write_command(const std::vector<std::string>& args) {
     return spec != nullptr && spec->writes;
 }
 
-std::vector<std::string> with_absolute_times(const std::vector<std::string>& args,
-                                             std::int64_t now_ms) {
-    if (args.empty()) return args;
-    const std::string name = to_upper(args[0]);
-    std::vector<std::string> out = args;  // a copy, changed below
+void make_times_absolute(std::vector<std::string>& args, std::int64_t now_ms) {
+    if (args.empty()) return;
+    std::vector<std::string>& out = args;  // changed in place: no copy for other commands
 
-    if (name == "EXPIRE" && args.size() == 3) {
+    if (is_command(args[0], "expire") && args.size() == 3) {
         std::int64_t at = 0;
         if (expire_deadline(args[2], true, now_ms, "expire", at).empty()) {
-            out = {"PEXPIREAT", args[1], std::to_string(at)};
+            out[0] = "PEXPIREAT";
+            out[2] = std::to_string(at);
         }
-    } else if (name == "SET") {
+    } else if (is_command(args[0], "set")) {
         // Walk the options the way SET parses them: EX/PX/EXAT/PXAT take the next argument.
         for (std::size_t i = 3; i < out.size(); ++i) {
             const std::string option = to_upper(out[i]);
@@ -201,7 +238,6 @@ std::vector<std::string> with_absolute_times(const std::vector<std::string>& arg
             ++i;  // skip the value
         }
     }
-    return out;
 }
 
 }  // namespace tachyon

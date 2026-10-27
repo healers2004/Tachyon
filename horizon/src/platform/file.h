@@ -62,6 +62,15 @@ bool write_all(FileHandle file, std::span<const char> data);
 // fsync() on Linux, FlushFileBuffers() on Windows. Slow (milliseconds); false on error.
 bool sync_file(FileHandle file);
 
+// Replaces `to` with `from` in one step: anyone opening `to` sees either the old file or the
+// new one, never a mix, even after a crash. Both must be on the same disk. false on error.
+bool replace_file(const std::string& from, const std::string& to);
+
+// Makes the directory's list of names durable, so a just-created or just-renamed file is still
+// there after a power cut. fsync() on the directory on Linux; nothing to do on Windows, where
+// MOVEFILE_WRITE_THROUGH in replace_file covers it. false on error.
+bool sync_directory(const std::string& dir);
+
 // Text for the last failed call above, e.g. "No such file or directory".
 std::string last_file_error();
 

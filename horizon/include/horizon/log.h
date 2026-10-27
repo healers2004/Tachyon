@@ -6,6 +6,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <memory>
@@ -53,6 +54,10 @@ public:
 
     // Bytes in the file, including the ones written but not yet on the disk.
     std::uint64_t size() const { return size_; }
+    // Bytes appended but not yet written to the file (they wait for commit()).
+    std::size_t pending_bytes() const { return batch_.size(); }
+    // True if bytes have been written to the OS but not yet flushed to the disk.
+    bool unsynced() const { return unsynced_; }
 
 private:
     bool write_batch(std::string& error);

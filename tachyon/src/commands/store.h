@@ -48,6 +48,11 @@ public:
 
     // Number of keys, including expired ones not yet removed (Redis's DBSIZE does the same).
     std::size_t size() const { return data_.size(); }
+    std::size_t expiring_count() const { return expires_.size(); }  // keys with an expiry
+
+    // Every key and value, for writing a snapshot. Read-only: the store keeps control of
+    // changes, so data_ and expires_ always agree.
+    const std::unordered_map<std::string, Value>& entries() const { return data_; }
     void clear();
 
     // Active expiry: deletes every key whose time has passed, so expired keys nobody reads

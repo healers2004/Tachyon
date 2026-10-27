@@ -116,21 +116,18 @@ TEST(Expiry, ExpiryWorksOnEveryType) {
 TEST(Expiry, RelativeTimesAreRewrittenForTheLog) {
     using Args = std::vector<std::string>;
     const std::string deadline = std::to_string(kNow + 10'000);
-    EXPECT_EQ(tachyon::with_absolute_times({"expire", "k", "10"}, kNow),
-              (Args{"PEXPIREAT", "k", deadline}));
-    EXPECT_EQ(tachyon::with_absolute_times({"SET", "k", "v", "NX", "ex", "10"}, kNow),
+    EXPECT_EQ(test::absolute({"expire", "k", "10"}, kNow), (Args{"PEXPIREAT", "k", deadline}));
+    EXPECT_EQ(test::absolute({"SET", "k", "v", "NX", "ex", "10"}, kNow),
               (Args{"SET", "k", "v", "NX", "PXAT", deadline}));
-    EXPECT_EQ(tachyon::with_absolute_times({"SET", "k", "v", "PX", "10000"}, kNow),
+    EXPECT_EQ(test::absolute({"SET", "k", "v", "PX", "10000"}, kNow),
               (Args{"SET", "k", "v", "PXAT", deadline}));
     // Errors are left alone, so they fail the same way when replayed.
-    EXPECT_EQ(tachyon::with_absolute_times({"SET", "k", "v", "EX", "0"}, kNow),
+    EXPECT_EQ(test::absolute({"SET", "k", "v", "EX", "0"}, kNow),
               (Args{"SET", "k", "v", "EX", "0"}));
-    EXPECT_EQ(tachyon::with_absolute_times({"EXPIRE", "k", "abc"}, kNow),
-              (Args{"EXPIRE", "k", "abc"}));
+    EXPECT_EQ(test::absolute({"EXPIRE", "k", "abc"}, kNow), (Args{"EXPIRE", "k", "abc"}));
     // "EX" as SET's value isn't an option.
-    EXPECT_EQ(tachyon::with_absolute_times({"SET", "k", "EX", "5"}, kNow),
-              (Args{"SET", "k", "EX", "5"}));
-    EXPECT_EQ(tachyon::with_absolute_times({"GET", "k"}, kNow), (Args{"GET", "k"}));
+    EXPECT_EQ(test::absolute({"SET", "k", "EX", "5"}, kNow), (Args{"SET", "k", "EX", "5"}));
+    EXPECT_EQ(test::absolute({"GET", "k"}, kNow), (Args{"GET", "k"}));
 }
 
 // The rewritten command gives the same reply and the same result as the original.
@@ -140,8 +137,7 @@ TEST(Expiry, RewrittenCommandBehavesTheSame) {
     const std::vector<std::string> commands[] = {
         {"SET", "a", "1", "EX", "10"}, {"SET", "b", "2"}, {"EXPIRE", "b", "20"}};
     for (const std::vector<std::string>& command : commands) {
-        EXPECT_EQ(run(original, command),
-                  run(rewritten, tachyon::with_absolute_times(command, kNow)));
+        EXPECT_EQ(run(original, command), run(rewritten, test::absolute(command, kNow)));
     }
     EXPECT_EQ(run(original, {"TTL", "a"}), run(rewritten, {"TTL", "a"}));
     EXPECT_EQ(run(original, {"TTL", "b"}), run(rewritten, {"TTL", "b"}));

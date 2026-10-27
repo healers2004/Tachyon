@@ -5,6 +5,7 @@
 # Then checks that data survives a restart, and that --no-persist keeps nothing.
 # Usage: tools/smoke_test.sh path/to/tachyon
 set -euo pipefail
+source "$(dirname "$0")/lib.sh"
 
 tachyon="$1"
 port=6380
@@ -18,10 +19,7 @@ trap '[ -n "$pid" ] && kill "$pid" 2>/dev/null; rm -rf "$data_dir"' EXIT
 start_server() {
     "$tachyon" "$@" &
     pid=$!
-    for _ in $(seq 50); do
-        redis-cli -p "$port" PING >/dev/null 2>&1 && return 0
-        sleep 0.1
-    done
+    wait_for_port "$port" && return 0
     echo "FAIL: tachyon $* did not start listening on $port"
     exit 1
 }
@@ -29,12 +27,8 @@ start_server() {
 # stop_server: Ctrl+C must shut tachyon down within 5 s with exit code 0.
 stop_server() {
     kill -INT "$pid"
-    for _ in $(seq 50); do
-        kill -0 "$pid" 2>/dev/null || break
-        sleep 0.1
-    done
     local status=0
-    if kill -0 "$pid" 2>/dev/null; then
+    if ! wait_for_exit "$pid"; then
         echo "FAIL: tachyon still running 5 s after SIGINT"
         exit 1
     fi
@@ -67,6 +61,11 @@ if "$tachyon" --port 99999 2>/dev/null; then
     exit 1
 fi
 echo "ok: invalid --port rejected"
+if [ "$("$tachyon" --version)" != "tachyon 1.0.0" ]; then
+    echo "FAIL: --version printed '$("$tachyon" --version)'"
+    exit 1
+fi
+echo "ok: --version"
 if "$tachyon" --fsync sometimes 2>/dev/null; then
     echo "FAIL: --fsync sometimes was accepted"
     exit 1
@@ -190,6 +189,19 @@ check OK SET survivor "still here"
 check 2 RPUSH survivor-list a b
 check 1 HSET survivor-hash f v
 check OK SET survivor-ttl v EX 1000
+# SAVE writes a snapshot and starts a new log; the write after it goes to that new log.
+check OK SAVE
+check OK SET after-save yes
+if [ ! -s "$data_dir/tachyon.snapshot" ] || [ -e "$data_dir/tachyon.log.1" ]; then
+    echo "FAIL: SAVE didn't replace log 1 with a snapshot:"
+    ls -l "$data_dir"
+    exit 1
+fi
+if ! redis-cli -p "$port" INFO persistence | grep -q "^rdb_saves:1"; then
+    echo "FAIL: INFO doesn't report the snapshot"
+    exit 1
+fi
+echo "ok: SAVE writes a snapshot, INFO reports it"
 stop_server
 start_server --dir "$data_dir"
 check "still here" GET survivor
@@ -201,8 +213,9 @@ if [ "$ttl" -gt 1000 ] || [ "$ttl" -lt 990 ]; then
     echo "FAIL: TTL after restart is $ttl, expected 990-1000"
     exit 1
 fi
+check yes GET after-save
 stop_server
-echo "ok: every type and its TTL survive a restart"
+echo "ok: every type and its TTL survive a restart, from the snapshot plus the new log"
 
 # --no-persist writes no log and forgets everything on exit. --port moves the server.
 port=6381

@@ -1,32 +1,42 @@
 #!/usr/bin/env bash
-# Crash test: writes keys over one connection, kills tachyon with SIGKILL at a random moment
-# (no chance to clean up or flush anything), restarts it on the same log and checks that every
-# write it acknowledged is still there. Repeats; even-numbered runs use --fsync everysec.
+# Crash test: writes keys over one connection, crashes tachyon, restarts it on the same data
+# directory and checks that every write it acknowledged is still there. Automatic snapshots
+# start after 16 KB of log, so random kills also land in the middle of snapshots. The runs
+# cycle through:
+#   kill -9 at a random moment, with --fsync always, then with --fsync everysec;
+#   and an abort at each step of a snapshot taken with SAVE while writes are in flight
+#   (--debug-crash-at, a test-only hook): part-way through the temp file, after it's complete,
+#   right after the rename, and after the new log is created.
 #
 # Killing the process proves crash safety, not power-cut safety: the OS still writes its cache
 # to the disk after the process dies. A power cut is what --fsync always protects against.
 #
-# Usage: tools/crash_test.sh path/to/tachyon [runs, default 10]
+# Usage: tools/crash_test.sh path/to/tachyon [runs, default 12]
 set -euo pipefail
+# The deliberate aborts mustn't leave core files behind. (bash still prints an "Aborted" notice
+# for each one; that's expected.)
+ulimit -c 0
+source "$(dirname "$0")/lib.sh"
 
 tachyon="$1"
-runs="${2:-10}"
+runs="${2:-12}"
 port=6382
 data_dir="$(mktemp -d)"
+work_dir="$(mktemp -d)" # the test's own files, kept out of the data directory
 pid=""
 
-trap '[ -n "$pid" ] && kill -9 "$pid" 2>/dev/null; rm -rf "$data_dir"' EXIT
+trap '[ -n "$pid" ] && kill -9 "$pid" 2>/dev/null; rm -rf "$data_dir" "$work_dir"' EXIT
 
-# start_server [tachyon arguments...]: starts tachyon on the shared log, waits up to 10 s.
+modes=(kill-always kill-everysec snapshot-partial snapshot-written snapshot-renamed new-log-created)
+
+# start_server [tachyon arguments...]: starts tachyon on the shared data, waits up to 10 s.
 start_server() {
-    "$tachyon" --port "$port" --dir "$data_dir" "$@" >"$data_dir/server.out" 2>&1 &
+    "$tachyon" --port "$port" --dir "$data_dir" --snapshot-after 16384 "$@" \
+        >"$work_dir/server.out" 2>&1 &
     pid=$!
-    for _ in $(seq 100); do
-        redis-cli -p "$port" PING >/dev/null 2>&1 && return 0
-        sleep 0.1
-    done
+    wait_for_port "$port" 10 && return 0
     echo "FAIL: tachyon didn't start. Its output:"
-    cat "$data_dir/server.out"
+    cat "$work_dir/server.out"
     exit 1
 }
 
@@ -53,24 +63,50 @@ writer() {
 next=1
 total_acked=0
 torn_tails=0
+snapshots=0
 sentinels=() # the last acknowledged key of every earlier run
 
-policy=always # the flush policy of the running server, the one about to be killed
-start_server --fsync "$policy"
 for run in $(seq "$runs"); do
-    acked="$data_dir/acked"
+    mode="${modes[$(((run - 1) % ${#modes[@]}))]}"
+    case "$mode" in
+    kill-always) start_server --fsync always ;;
+    kill-everysec) start_server --fsync everysec ;;
+    *) start_server --debug-crash-at "$mode" ;;
+    esac
+
+    acked="$work_dir/acked"
     : >"$acked"
     writer "$next" "$acked" 2>/dev/null & # "connection reset" when tachyon dies is expected
     writer_pid=$!
-    sleep "0.$((RANDOM % 9 + 1))" # 0.1 to 0.9 s of writes
 
-    kill -9 "$pid"
-    wait "$pid" 2>/dev/null || true
+    if [ "${mode#kill-}" != "$mode" ]; then
+        sleep "0.$((RANDOM % 9 + 1))" # 0.1 to 0.9 s of writes
+        kill -9 "$pid"
+        wait "$pid" 2>/dev/null || true
+    else
+        # Let some writes be acknowledged, then ask for a snapshot while they keep coming. The
+        # server aborts itself at the crash point during it (or during an automatic snapshot,
+        # if one starts first). Wait up to 20 s for that.
+        sleep "0.$((RANDOM % 5 + 2))"
+        redis-cli -p "$port" SAVE >/dev/null 2>&1 || true
+        status=0
+        if ! wait_for_exit "$pid" 20; then
+            echo "FAIL: run $run: tachyon never reached the crash point $mode"
+            exit 1
+        fi
+        wait "$pid" 2>/dev/null || status=$?
+        if [ "$status" -ne 134 ]; then # 128 + SIGABRT: it really stopped at the crash point
+            echo "FAIL: run $run: expected an abort at $mode, got exit status $status"
+            cat "$work_dir/server.out"
+            exit 1
+        fi
+    fi
     pid=""
     wait "$writer_pid" 2>/dev/null || true
+    snapshots=$((snapshots + $(grep -c "snapshot saved" "$work_dir/server.out" || true)))
 
     if [ ! -s "$acked" ]; then
-        echo "FAIL: run $run: no write was acknowledged before the kill"
+        echo "FAIL: run $run ($mode): no write was acknowledged before the crash"
         exit 1
     fi
     first="$next"
@@ -78,32 +114,28 @@ for run in $(seq "$runs"); do
     total_acked=$((total_acked + last - first + 1))
     next=$((last + 2)) # key last+1 may or may not have been written; skip it
 
-    # Restart on the same log, alternating the policy for the next run's kill.
-    killed_policy="$policy"
-    [ "$policy" = always ] && policy=everysec || policy=always
-    start_server --fsync "$policy"
-    grep -q "dropped a half-written" "$data_dir/server.out" && torn_tails=$((torn_tails + 1))
-
-    # GET every key acknowledged in this run, plus the last key of every earlier run, and
-    # compare with the values that were written.
-    : >"$data_dir/gets"
-    : >"$data_dir/expected"
+    # Restart normally and check every key acknowledged in this run, plus the last key of
+    # every earlier run, against the values that were written.
+    start_server
+    grep -q "dropped a half-written" "$work_dir/server.out" && torn_tails=$((torn_tails + 1))
+    : >"$work_dir/gets"
+    : >"$work_dir/expected"
     for i in $(seq "$first" "$last") "${sentinels[@]}"; do
-        echo "GET key$i" >>"$data_dir/gets"
-        echo "v$i" >>"$data_dir/expected"
+        echo "GET key$i" >>"$work_dir/gets"
+        echo "v$i" >>"$work_dir/expected"
     done
-    redis-cli -p "$port" <"$data_dir/gets" >"$data_dir/actual"
-    if ! diff -q "$data_dir/expected" "$data_dir/actual" >/dev/null; then
-        echo "FAIL: run $run ($killed_policy): acknowledged writes are missing after the restart"
-        diff "$data_dir/expected" "$data_dir/actual" | head -20
+    redis-cli -p "$port" <"$work_dir/gets" >"$work_dir/actual"
+    if ! diff -q "$work_dir/expected" "$work_dir/actual" >/dev/null; then
+        echo "FAIL: run $run ($mode): acknowledged writes are missing after the restart"
+        diff "$work_dir/expected" "$work_dir/actual" | head -20
         exit 1
     fi
     sentinels+=("$last")
-    echo "ok: run $run ($killed_policy): $((last - first + 1)) acknowledged writes all present"
+    kill -INT "$pid"
+    wait "$pid"
+    pid=""
+    echo "ok: run $run ($mode): $((last - first + 1)) acknowledged writes all present"
 done
 
-kill -INT "$pid"
-wait "$pid"
-pid=""
 echo "ok: $runs crash runs, $total_acked acknowledged writes, none lost" \
-    "($torn_tails restarts dropped a half-written record)"
+    "($snapshots snapshots taken, $torn_tails restarts dropped a half-written record)"

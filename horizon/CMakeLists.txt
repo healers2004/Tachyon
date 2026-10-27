@@ -1,6 +1,7 @@
 # Static library: an archive of compiled .cpp files that programs link against.
 add_library(horizon
   src/crc32.cpp
+  src/engine.cpp
   src/log.cpp)
 # PUBLIC: Horizon and everything that links it can #include "horizon/...".
 # PRIVATE: only Horizon's own files see src/, so platform/file.h stays internal.
@@ -16,6 +17,7 @@ endif()
 # Test program: our tests + Horizon + GoogleTest's ready-made main().
 add_executable(horizon_tests
   tests/crc32_test.cpp
+  tests/engine_test.cpp
   tests/log_test.cpp)
 target_link_libraries(horizon_tests PRIVATE horizon GTest::gtest_main)
 # Registers each TEST(...) with ctest.

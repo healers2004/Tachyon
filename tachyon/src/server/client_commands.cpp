@@ -1,6 +1,5 @@
 #include "server/client_commands.h"
 
-#include <cctype>
 #include <cstddef>
 
 #include "commands/commands.h"
@@ -9,13 +8,6 @@
 namespace tachyon {
 
 namespace {
-
-std::string lowercase(std::string text) {
-    for (std::size_t i = 0; i < text.size(); ++i) {
-        text[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(text[i])));
-    }
-    return text;
-}
 
 std::string wrong_args(const std::string& command) {
     return error_reply("ERR wrong number of arguments for '" + command + "' command");
@@ -40,13 +32,13 @@ std::string not_allowed(const std::string& command) {
 bool run_client_command(Connection& connection, PubSub& pubsub,
                         const std::vector<std::string>& args) {
     if (args.empty()) return false;
-    const std::string name = lowercase(args[0]);
+    const std::string& name = args[0];  // lowercased only for error messages
     const bool subscribed = !connection.channels.empty();
     std::string& reply = connection.pending_reply;
 
-    if (name == "subscribe") {
+    if (is_command(name, "subscribe")) {
         if (args.size() < 2) {
-            reply += wrong_args(name);
+            reply += wrong_args(to_lower(name));
             return true;
         }
         for (std::size_t i = 1; i < args.size(); ++i) {
@@ -55,7 +47,7 @@ bool run_client_command(Connection& connection, PubSub& pubsub,
         return true;
     }
 
-    if (name == "unsubscribe") {
+    if (is_command(name, "unsubscribe")) {
         if (args.size() > 1) {
             for (std::size_t i = 1; i < args.size(); ++i) {
                 reply +=
@@ -77,17 +69,17 @@ bool run_client_command(Connection& connection, PubSub& pubsub,
         return true;
     }
 
-    if (name == "quit") {
+    if (is_command(name, "quit")) {
         reply += simple_string_reply("OK");
         connection.closing = true;  // handle_input stops here; the loop closes after sending
         return true;
     }
 
-    if (name == "publish") {
+    if (is_command(name, "publish")) {
         if (args.size() != 3) {
-            reply += wrong_args(name);
+            reply += wrong_args(to_lower(name));
         } else if (subscribed) {
-            reply += not_allowed(name);
+            reply += not_allowed(to_lower(name));
         } else {
             reply += integer_reply(static_cast<long long>(pubsub.publish(args[1], args[2])));
         }
@@ -97,9 +89,9 @@ bool run_client_command(Connection& connection, PubSub& pubsub,
     if (!subscribed) return false;  // a normal command for the store
 
     // Subscribed mode: PING answers as an array, so it can't be confused with a message.
-    if (name == "ping") {
+    if (is_command(name, "ping")) {
         if (args.size() > 2) {
-            reply += wrong_args(name);
+            reply += wrong_args(to_lower(name));
         } else {
             reply += array_header(2) + bulk_reply("pong") +
                      bulk_reply(args.size() == 2 ? args[1] : std::string());
@@ -108,7 +100,7 @@ bool run_client_command(Connection& connection, PubSub& pubsub,
     }
     // Like Redis, an unknown command or a wrong argument count is reported before the refusal.
     std::string error = validate_command(args);
-    reply += error.empty() ? not_allowed(name) : error;
+    reply += error.empty() ? not_allowed(to_lower(name)) : error;
     return true;
 }
 

@@ -101,6 +101,9 @@ TEST(RespParser, RejectsMalformedInput) {
         "*1\r\n$2000000\r\n",         // length over kMaxCommandBytes
         "*1\r\n$3\r\nfooXY",          // string not followed by \r\n
         "*" + std::string(100, '1'),  // length line that never ends
+        "*01\r\n$4\r\nPING\r\n",      // leading zero, which Redis rejects too
+        "*+1\r\n$4\r\nPING\r\n",      // a sign
+        "*1\r\n$04\r\nPING\r\n",      // leading zero in a length
     };
     for (std::size_t i = 0; i < inputs.size(); ++i) {
         EXPECT_EQ(parse_once(inputs[i]).status, ParseStatus::kError) << "input #" << i;
@@ -112,4 +115,34 @@ TEST(RespParser, RejectsUnfinishedCommandOverLimit) {
     std::string input = "*2\r\n$1000000\r\n" + std::string(1000000, 'a') + "\r\n$100000\r\n" +
                         std::string(60000, 'b');
     EXPECT_EQ(parse_once(input).status, ParseStatus::kError);
+}
+
+// Found by fuzzing: a length line over the 32-character limit was accepted when it arrived in
+// one read but rejected when split across reads. Every split must give the same answer.
+TEST(RespParser, LongLengthLineIsRejectedHoweverItArrives) {
+    const std::string input = "*" + std::string(32, '0') + "889\r\n";
+    EXPECT_EQ(parse_once(input).status, ParseStatus::kError);
+    for (std::size_t split = 1; split < input.size(); ++split) {
+        RespParser parser;
+        parser.feed(input.substr(0, split));
+        ParseStatus first = parser.next().status;
+        ParseStatus final_status = first;
+        if (first == ParseStatus::kNeedMore) {
+            parser.feed(input.substr(split));
+            final_status = parser.next().status;
+        }
+        EXPECT_EQ(final_status, ParseStatus::kError) << "split at " << split;
+    }
+}
+
+// The limit's exact edge: a 32-character line whose '\r' has arrived but whose '\n' hasn't is
+// still waiting, not rejected; one more character before the "\r\n" can never be valid.
+TEST(RespParser, LengthLineLimitIsExact) {
+    const std::string line = "*" + std::string(31, '1');  // 32 characters
+    RespParser parser;
+    parser.feed(line + "\r");
+    EXPECT_EQ(parser.next().status, ParseStatus::kNeedMore);  // still waiting for '\n'
+    RespParser longer;
+    longer.feed(line + "1\r");  // 33 characters before "\r\n": can never be valid
+    EXPECT_EQ(longer.next().status, ParseStatus::kError);
 }

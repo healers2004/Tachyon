@@ -19,4 +19,11 @@ inline std::string run(tachyon::Store& store, const std::vector<std::string>& ar
     return tachyon::execute_command(store, args, now_ms);
 }
 
+// A copy of `args` with relative expiry times made absolute, as the server does before running
+// and logging a command.
+inline std::vector<std::string> absolute(std::vector<std::string> args, std::int64_t now_ms) {
+    tachyon::make_times_absolute(args, now_ms);
+    return args;
+}
+
 }  // namespace test

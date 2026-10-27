@@ -51,6 +51,18 @@ bool write_all(FileHandle file, std::span<const char> data) {
 // that and be a little faster.
 bool sync_file(FileHandle file) { return fsync(to_native(file)) == 0; }
 
+// rename() is atomic on POSIX: it swaps the directory entry, so `to` is never missing or half
+// written. It isn't durable until the directory itself is synced.
+bool replace_file(const std::string& from, const std::string& to) {
+    return rename(from.c_str(), to.c_str()) == 0;
+}
+
+bool sync_directory(const std::string& dir) {
+    // A directory is opened read-only like a file; O_DIRECTORY fails if it's not one.
+    File handle(open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    return handle.valid() && fsync(to_native(handle.get())) == 0;
+}
+
 std::string last_file_error() { return std::strerror(errno); }
 
 }  // namespace horizon

@@ -33,9 +33,12 @@ bool Log::open(const std::string& path, std::uint64_t keep_bytes, FlushPolicy po
                std::string& error) {
     File file = open_for_append(path, keep_bytes, error);
     if (!file.valid()) return false;
-    // make_unique<File>(std::move(file)): a heap File that takes over the open handle.
+    // make_unique<File>(std::move(file)): a heap File that takes over the open handle. If a
+    // file was already open (the engine reuses a Log for each new log file), it's closed here.
     file_ = std::make_unique<File>(std::move(file));
     policy_ = policy;
+    batch_.clear();
+    unsynced_ = false;
     size_ = keep_bytes;
     last_sync_ = std::chrono::steady_clock::now();
     return true;

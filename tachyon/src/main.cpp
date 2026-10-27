@@ -1,12 +1,15 @@
 #include <charconv>
 #include <csignal>
+#include <cstdint>
 #include <iostream>
 #include <string>
 #include <string_view>
 #include <system_error>
 
 #include "platform/socket.h"
+#include "server/logging.h"
 #include "server/server.h"
+#include "version.h"
 
 namespace {  // anonymous namespace: visible only in this file
 
@@ -15,16 +18,20 @@ namespace {  // anonymous namespace: visible only in this file
 void on_stop_signal(int) { tachyon::request_stop(); }
 
 const char* const kUsage =
-    "usage: tachyon [--port N] [--dir PATH] [--fsync always|everysec] [--no-persist]";
+    "usage: tachyon [--port N] [--dir PATH] [--fsync always|everysec] [--snapshot-after BYTES]\n"
+    "               [--no-persist] [--loglevel debug|verbose|notice|warning] [--version]";
 
-// Parses a port number. from_chars parses without exceptions; `ptr` is where it stopped, so a
-// value like "80x" is caught by checking that it reached the end.
-bool parse_port(std::string_view value, unsigned short& port) {
-    int number = 0;
+// Parses a whole string as an unsigned number. from_chars parses without exceptions; `ptr` is
+// where it stopped, so a value like "80x" is caught by checking that it reached the end.
+bool parse_number(std::string_view value, std::uint64_t& number) {
     std::from_chars_result result =
         std::from_chars(value.data(), value.data() + value.size(), number);
-    if (result.ec != std::errc() || result.ptr != value.data() + value.size() || number < 1 ||
-        number > 65535) {
+    return !value.empty() && result.ec == std::errc() && result.ptr == value.data() + value.size();
+}
+
+bool parse_port(std::string_view value, unsigned short& port) {
+    std::uint64_t number = 0;
+    if (!parse_number(value, number) || number < 1 || number > 65535) {
         std::cerr << "tachyon: invalid port '" << value << "', expected 1-65535" << std::endl;
         return false;
     }
@@ -33,11 +40,16 @@ bool parse_port(std::string_view value, unsigned short& port) {
 }
 
 // Reads the command line into `options`. Prints why and returns false on anything unknown.
-bool parse_args(int argc, char* argv[], tachyon::ServerOptions& options) {
+// `version` is set by --version, which prints the version and exits.
+bool parse_args(int argc, char* argv[], tachyon::ServerOptions& options, bool& version) {
     for (int i = 1; i < argc; ++i) {
         std::string_view arg = argv[i];
         if (arg == "--no-persist") {
             options.persist = false;
+            continue;
+        }
+        if (arg == "--version") {
+            version = true;
             continue;
         }
         // Every other option takes a value.
@@ -46,6 +58,7 @@ bool parse_args(int argc, char* argv[], tachyon::ServerOptions& options) {
             return false;
         }
         std::string_view value = argv[++i];
+        tachyon::LogLevel level = tachyon::LogLevel::kNotice;
         if (arg == "--port") {
             if (!parse_port(value, options.port)) return false;
         } else if (arg == "--dir") {
@@ -54,6 +67,12 @@ bool parse_args(int argc, char* argv[], tachyon::ServerOptions& options) {
             options.flush = horizon::FlushPolicy::kEveryWrite;
         } else if (arg == "--fsync" && value == "everysec") {
             options.flush = horizon::FlushPolicy::kEverySecond;
+        } else if (arg == "--snapshot-after" && parse_number(value, options.snapshot_after_bytes)) {
+            continue;
+        } else if (arg == "--loglevel" && tachyon::parse_log_level(value, level)) {
+            tachyon::set_log_level(level);
+        } else if (arg == "--debug-crash-at") {
+            options.crash_point = std::string(value);  // test-only, for tools/crash_test.sh
         } else {
             std::cerr << kUsage << std::endl;
             return false;
@@ -66,8 +85,13 @@ bool parse_args(int argc, char* argv[], tachyon::ServerOptions& options) {
 
 int main(int argc, char* argv[]) {
     tachyon::ServerOptions options;
-    if (!parse_args(argc, argv, options)) {
+    bool version = false;
+    if (!parse_args(argc, argv, options, version)) {
         return 1;
+    }
+    if (version) {
+        std::cout << "tachyon " << tachyon::kVersion << std::endl;
+        return 0;
     }
 
     // std::signal returns SIG_ERR if the handler can't be installed.

@@ -26,7 +26,6 @@ std::string wrong_arg_count(const std::string& command);
 bool parse_int(const std::string& text, std::int64_t& out);
 
 std::string to_upper(std::string text);
-std::string to_lower(std::string text);
 
 // A function template: the compiler writes one copy per type T it's used with, e.g.
 // find_as<Hash>(...) and find_as<List>(...). Templates live in headers because the compiler

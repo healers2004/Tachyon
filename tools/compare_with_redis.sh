@@ -5,6 +5,7 @@
 # hash table's, which differs between the two).
 # Usage: tools/compare_with_redis.sh path/to/tachyon    (needs redis-server and redis-cli)
 set -euo pipefail
+source "$(dirname "$0")/lib.sh"
 
 tachyon="$1"
 redis_port=6390
@@ -19,10 +20,10 @@ redis_pid=$!
 "$tachyon" --port "$tachyon_port" --no-persist >/dev/null &
 tachyon_pid=$!
 for port in "$redis_port" "$tachyon_port"; do
-    for _ in $(seq 50); do
-        redis-cli -p "$port" PING >/dev/null 2>&1 && break
-        sleep 0.1
-    done
+    wait_for_port "$port" || {
+        echo "FAIL: no server answered on port $port"
+        exit 1
+    }
 done
 
 # reply <port> <words...>: the formatted reply, with array numbering removed if sorting.

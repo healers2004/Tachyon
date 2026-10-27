@@ -36,15 +36,29 @@ jobs:
       - name: Smoke test with redis-cli (Linux)
         if: runner.os == 'Linux'
         run: |
+          sudo apt-get update
           sudo apt-get install -y redis-tools redis-server
           bash tools/smoke_test.sh build/tachyon/tachyon
 
-      # Kills tachyon with SIGKILL mid-write and checks that no acknowledged write is lost.
+      # Crashes tachyon mid-write and mid-snapshot; no acknowledged write may be lost.
       - name: Crash test (Linux)
         if: runner.os == 'Linux'
-        run: bash tools/crash_test.sh build/tachyon/tachyon 20
+        run: bash tools/crash_test.sh build/tachyon/tachyon 24
+
+      # Fills a tiny RAM disk: a failed snapshot must keep serving, a full log must stop cleanly.
+      - name: Full-disk test (Linux)
+        if: runner.os == 'Linux'
+        run: bash tools/disk_full_test.sh build/tachyon/tachyon
 
       # The same commands against a real Redis and against tachyon; every reply must match.
       - name: Compare with real Redis (Linux)
         if: runner.os == 'Linux'
         run: bash tools/compare_with_redis.sh build/tachyon/tachyon
+
+  # libFuzzer on the RESP parser and the log reader, with ASan and UBSan (Clang only).
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Fuzz each target for 60 seconds
+        run: bash tools/fuzz.sh 60 build-fuzz
