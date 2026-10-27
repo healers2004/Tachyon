@@ -135,6 +135,48 @@ fi
 check PONG PING
 echo "ok: redis-benchmark with 50 clients"
 
+# wait_for_receivers <n> <channel>: PUBLISHes "ping" until n subscribers receive it (up to 5 s),
+# since a redis-cli started in the background takes a moment to subscribe.
+wait_for_receivers() {
+    for _ in $(seq 50); do
+        [ "$(redis-cli -p "$port" PUBLISH "$2" ping)" = "$1" ] && return 0
+        sleep 0.1
+    done
+    echo "FAIL: PUBLISH $2 never reached $1 subscriber(s)"
+    exit 1
+}
+
+# Pub/sub with two real redis-cli sessions: one subscribes, the other publishes.
+redis-cli -p "$port" SUBSCRIBE news >"$data_dir/news.out" &
+subscriber=$!
+wait_for_receivers 1 news
+check 1 PUBLISH news "hello subscribers"
+sleep 0.3
+if ! grep -q "hello subscribers" "$data_dir/news.out"; then
+    echo "FAIL: the subscriber didn't receive the message. It got:"
+    cat "$data_dir/news.out"
+    exit 1
+fi
+echo "ok: SUBSCRIBE in one redis-cli receives PUBLISH from another"
+
+# The subscriber disconnects: the server must forget it, so a PUBLISH reaches nobody.
+kill "$subscriber"
+wait "$subscriber" 2>/dev/null || true
+wait_for_receivers 0 news
+echo "ok: a disconnected subscriber is removed"
+
+# Many subscribers on one channel.
+subscribers=()
+for _ in $(seq 20); do
+    redis-cli -p "$port" SUBSCRIBE crowd >/dev/null &
+    subscribers+=($!)
+done
+wait_for_receivers 20 crowd
+kill "${subscribers[@]}"
+wait "${subscribers[@]}" 2>/dev/null || true
+wait_for_receivers 0 crowd
+echo "ok: 20 subscribers on one channel, all removed after disconnecting"
+
 # Shut down while the half-command client and the slow reader are still connected.
 stop_server
 exec 4>&- 6>&-

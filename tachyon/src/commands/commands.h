@@ -15,6 +15,10 @@ namespace tachyon {
 std::string execute_command(Store& store, const std::vector<std::string>& args,
                             std::int64_t now_ms);
 
+// "" if the command exists and has a valid number of arguments; otherwise the error reply that
+// execute_command would give (unknown command, or wrong number of arguments).
+std::string validate_command(const std::vector<std::string>& args);
+
 // True for commands that can change the store. Only these go to the log.
 bool is_write_command(const std::vector<std::string>& args);
 

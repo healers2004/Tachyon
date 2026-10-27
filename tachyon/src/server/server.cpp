@@ -12,6 +12,7 @@
 #include "platform/socket.h"
 #include "protocol/resp_writer.h"
 #include "server/connection.h"
+#include "server/pubsub.h"
 
 namespace tachyon {
 
@@ -55,12 +56,13 @@ void accept_new_clients(SocketHandle listener, ConnectionList& connections) {
 }
 
 // Reads what has arrived and runs it. Returns false if the connection should be closed.
-bool read_from(Connection& connection, Store& store, CommandLog* log) {
+bool read_from(Connection& connection, Store& store, CommandLog* log, PubSub& pubsub) {
     char buffer[kReadChunkSize];
     long long n = receive(connection.socket.get(), buffer, sizeof(buffer));
     if (n == kWouldBlock) return true;  // woken up, but nothing to read after all
     if (n <= 0) return false;           // 0: the client closed the connection; -1: error
-    handle_input(connection, store, log, std::string_view(buffer, static_cast<std::size_t>(n)));
+    handle_input(connection, store, log, pubsub,
+                 std::string_view(buffer, static_cast<std::size_t>(n)));
     return true;
 }
 
@@ -127,6 +129,9 @@ int run_server(const ServerOptions& options) {
     std::cout << "tachyon: listening on " << options.ip << ":" << options.port
               << ", press Ctrl+C to stop" << std::endl;
 
+    // Declared before `connections`, so it's destroyed after them: objects in a function are
+    // destroyed in reverse order, and every Connection's destructor still needs the registry.
+    PubSub pubsub;
     ConnectionList connections;
     std::vector<PollEntry> entries;
     std::int64_t last_sweep_ms = current_time_ms();
@@ -165,7 +170,8 @@ int run_server(const ServerOptions& options) {
             const PollEntry& entry = entries[i + 1];
             bool keep = true;
             if (entry.want_read && (entry.readable || entry.failed)) {
-                keep = read_from(*connections[i], store, log);  // a hang-up shows up as a 0 read
+                keep = read_from(*connections[i], store, log,
+                                 pubsub);  // a hang-up shows up as a 0 read
             } else if (entry.failed) {
                 keep = false;
             }
@@ -183,7 +189,13 @@ int run_server(const ServerOptions& options) {
 
         // 3. Write: send queued replies. Most fit in the OS buffer straight away.
         for (std::size_t i = 0; i < connections.size(); ++i) {
-            if (connections[i] && !write_to(*connections[i])) connections[i].reset();
+            if (!connections[i]) continue;
+            bool keep = write_to(*connections[i]);
+            if (keep && over_output_limit(*connections[i])) {
+                std::cout << "tachyon: closing subscriber: too far behind on messages" << std::endl;
+                keep = false;
+            }
+            if (!keep) connections[i].reset();  // also takes it out of every channel
         }
         remove_closed(connections);
 

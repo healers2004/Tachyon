@@ -152,8 +152,7 @@ std::string cmd_echo(Store&, const Args& args, std::int64_t) { return bulk_reply
 
 // ---- Dispatch ----
 
-std::string execute_command(Store& store, const std::vector<std::string>& args,
-                            std::int64_t now_ms) {
+std::string validate_command(const std::vector<std::string>& args) {
     // The parser never produces an empty command, but never index into an empty vector.
     if (args.empty()) return error_reply("ERR empty command");
 
@@ -161,7 +160,14 @@ std::string execute_command(Store& store, const std::vector<std::string>& args,
     // error_reply replaces any \r\n in the user's text, so this can't inject a reply.
     if (spec == nullptr) return unknown_command(args);
     if (!arity_ok(*spec, args.size())) return wrong_arg_count(spec->name);
-    return spec->handler(store, args, now_ms);
+    return "";
+}
+
+std::string execute_command(Store& store, const std::vector<std::string>& args,
+                            std::int64_t now_ms) {
+    std::string error = validate_command(args);
+    if (!error.empty()) return error;
+    return find_command(args[0])->handler(store, args, now_ms);
 }
 
 bool is_write_command(const std::vector<std::string>& args) {

@@ -9,6 +9,7 @@
 
 #include "commands/commands.h"
 #include "server/connection.h"
+#include "server/pubsub.h"
 
 using horizon::FlushPolicy;
 using tachyon::CommandLog;
@@ -135,8 +136,9 @@ TEST(CommandLog, HandleInputRecordsWritesForGroupCommit) {
     Store store;
     CommandLog log;
     ASSERT_TRUE(log.open(kPath, FlushPolicy::kEveryWrite, store, error)) << error;
+    tachyon::PubSub pubsub;
     Connection connection{Socket()};
-    handle_input(connection, store, &log,
+    handle_input(connection, store, &log, pubsub,
                  "*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n*2\r\n$3\r\nGET\r\n$1\r\nk\r\n");
     EXPECT_EQ(connection.pending_reply, "+OK\r\n$1\r\nv\r\n");
     EXPECT_EQ(file_size(), 0u);  // queued, not yet written

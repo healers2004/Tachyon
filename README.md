@@ -23,16 +23,21 @@ against a real Redis (see below).
 
 | Group | Commands |
 | --- | --- |
-| Connection | `PING [message]`, `ECHO message` |
+| Connection | `PING [message]`, `ECHO message`, `QUIT` |
 | Strings | `GET`, `SET key value [NX \| XX] [EX s \| PX ms \| EXAT t \| PXAT t \| KEEPTTL]`, `DEL key [key ...]`, `EXISTS key [key ...]` |
 | Hashes | `HSET key field value [field value ...]`, `HGET`, `HGETALL`, `HDEL key field [field ...]`, `HLEN` |
 | Lists | `LPUSH`, `RPUSH key element [element ...]`, `LPOP`, `RPOP key [count]`, `LRANGE`, `LTRIM key start stop`, `LLEN` |
 | Expiry | `EXPIRE key seconds`, `PEXPIREAT key unix-ms`, `TTL`, `PERSIST` |
 | Keyspace | `TYPE`, `DBSIZE`, `FLUSHALL [SYNC \| ASYNC]` |
+| Pub/sub | `SUBSCRIBE channel [channel ...]`, `UNSUBSCRIBE [channel ...]`, `PUBLISH channel message` |
 
 Using a key as the wrong type gives Redis's `WRONGTYPE` error. Emptied hashes and lists are
 deleted, as in Redis. Expired keys are removed when accessed and by a sweep about once a second.
-Not yet supported: `SET ... GET`, `EXPIRE`'s `NX`/`XX`/`GT`/`LT`, and insertion order in
+A subscribed connection only accepts `SUBSCRIBE`, `UNSUBSCRIBE`, `PING` and `QUIT`, as in
+Redis, and a subscriber that falls 32 MB behind on messages is disconnected (Redis's pub/sub
+limit). Messages aren't stored: a channel with no subscribers drops them.
+
+Not yet supported: pattern subscriptions (`PSUBSCRIBE`), `PUBSUB`, `RESET`, `SET ... GET`, `EXPIRE`'s `NX`/`XX`/`GT`/`LT`, and insertion order in
 `HGETALL` (Redis keeps it for small hashes).
 
 Only RESP arrays are accepted as commands, so stray input such as an HTTP request is rejected
@@ -60,7 +65,8 @@ redis-benchmark -p 6380 -c 50 -t ping_mbulk,set,get
 `PING_INLINE` is skipped because Tachyon accepts only RESP arrays, not inline commands.
 
 `tools/compare_with_redis.sh build/tachyon/tachyon` sends 150 commands, edge cases and errors
-included, to both a real `redis-server` and Tachyon, and fails on any difference in the replies.
+included, plus whole pub/sub sessions, to both a real `redis-server` and Tachyon, and fails on
+any difference in the replies.
 
 `tools/crash_test.sh build/tachyon/tachyon 100` checks durability: it writes keys, kills the
 server with `kill -9` at a random moment, restarts it and verifies every acknowledged write, 100
@@ -124,7 +130,7 @@ from once 1 MB of replies is queued for it. Up to 1000 clients are accepted.
 | 2 | Non-blocking event loop (`poll` / `WSAPoll`) and many clients | Done |
 | 3 | Durability with a write-ahead log | Done |
 | 4 | Hashes, lists and key expiry | Done |
-| 5 | Pub/sub | Planned |
+| 5 | Pub/sub | Done |
 | 6 | Snapshots and log compaction | Planned |
 | 7 | Fuzzing, benchmarks against Redis, v1.0 release | Planned |
 

@@ -224,5 +224,82 @@ FLUSHALL
 DBSIZE
 EOF
 
-echo "compared $count commands: $failures mismatch(es)"
+# ---- Pub/sub: whole sessions on one connection, compared byte for byte ----
+# (redis-cli opens a new connection per command, and subscribed mode lives on one connection.)
+
+P=""
+cmd() { # appends one command, in RESP form, to $P
+    local word
+    P+="*$#"$'\r\n'
+    for word in "$@"; do P+="\$${#word}"$'\r\n'"$word"$'\r\n'; done
+}
+
+# session <port>: sends $P on one connection and prints every byte back within 0.5 s.
+session() {
+    exec 3<>"/dev/tcp/127.0.0.1/$1"
+    printf '%s' "$P" >&3
+    timeout 0.5 cat <&3 || true
+    exec 3>&-
+}
+
+# delivery <port>: one connection subscribes, another publishes; prints both sides' replies.
+delivery() {
+    exec 4<>"/dev/tcp/127.0.0.1/$1"
+    P=""
+    cmd SUBSCRIBE news
+    printf '%s' "$P" >&4
+    sleep 0.2
+    redis-cli -p "$1" PUBLISH news "hello world"
+    redis-cli -p "$1" PUBLISH news ""
+    redis-cli -p "$1" PUBLISH elsewhere x
+    timeout 0.5 cat <&4 || true
+    exec 4>&-
+}
+
+compare_bytes() { # compare_bytes <name> <redis output> <tachyon output>
+    count=$((count + 1))
+    if [ "$2" != "$3" ]; then
+        failures=$((failures + 1))
+        echo "MISMATCH: pub/sub session '$1'"
+        echo "  redis:   $(printf '%s' "$2" | tr '\r\n' '~|')"
+        echo "  tachyon: $(printf '%s' "$3" | tr '\r\n' '~|')"
+    fi
+}
+
+compare_session() { # compare_session <name>, using the commands in $P
+    compare_bytes "$1" "$(session "$redis_port")" "$(session "$tachyon_port")"
+}
+
+P=""
+cmd SUBSCRIBE a b
+cmd SUBSCRIBE a
+cmd GET k
+cmd SET k v
+cmd GET
+cmd FLY
+cmd PING
+cmd PING x
+cmd PUBLISH a m
+cmd UNSUBSCRIBE a zz
+cmd UNSUBSCRIBE
+cmd UNSUBSCRIBE
+cmd PING
+compare_session "subscribed mode"
+
+P=""
+cmd UNSUBSCRIBE x
+cmd SUBSCRIBE
+cmd PUBLISH a
+cmd PUBLISH nobody msg
+cmd QUIT
+cmd PING
+compare_session "errors and QUIT"
+
+P=""
+cmd QUIT extra
+compare_session "QUIT with an argument"
+
+compare_bytes "message delivery" "$(delivery "$redis_port")" "$(delivery "$tachyon_port")"
+
+echo "compared $count commands and sessions: $failures mismatch(es)"
 [ "$failures" -eq 0 ]

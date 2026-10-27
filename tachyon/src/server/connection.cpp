@@ -4,16 +4,28 @@
 
 #include "commands/commands.h"
 #include "protocol/resp_writer.h"
+#include "server/client_commands.h"
+#include "server/pubsub.h"
 
 namespace tachyon {
 
-void handle_input(Connection& connection, Store& store, CommandLog* log, std::string_view data) {
+Connection::~Connection() {
+    if (pubsub != nullptr) pubsub->unsubscribe_all(*this);
+}
+
+bool over_output_limit(const Connection& connection) {
+    return !connection.channels.empty() &&
+           connection.pending_reply.size() > kMaxSubscriberBacklogBytes;
+}
+
+void handle_input(Connection& connection, Store& store, CommandLog* log, PubSub& pubsub,
+                  std::string_view data) {
     connection.parser.feed(data);
 
     // One read can hold several commands (clients may pipeline them), so handle them all.
-    // shortcut: replies are queued without a size check, so a client pipelining many large
-    // GETs can grow pending_reply past the read limit; Redis disconnects such clients
-    // (client-output-buffer-limit), worth adding in Phase 7.
+    // shortcut: a normal client's replies are queued without a size check, so pipelining many
+    // large GETs can grow pending_reply past the read limit; Redis has no limit for normal
+    // clients by default either, only for subscribers (over_output_limit).
     while (true) {
         ParseResult result = connection.parser.next();
         if (result.status == ParseStatus::kNeedMore) return;
@@ -24,6 +36,13 @@ void handle_input(Connection& connection, Store& store, CommandLog* log, std::st
             std::cout << "tachyon: closing client: " << result.error << std::endl;
             return;
         }
+
+        // SUBSCRIBE, PUBLISH, QUIT and subscribed mode: nothing here touches the store or the log.
+        if (run_client_command(connection, pubsub, result.args)) {
+            if (connection.closing) return;  // QUIT: ignore anything sent after it
+            continue;
+        }
+
         // EXPIRE k 10 runs (and is logged) as PEXPIREAT k <deadline>, so a replay later sets
         // the same deadline instead of a fresh 10 seconds.
         const std::int64_t now_ms = current_time_ms();
